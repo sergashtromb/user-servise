@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 )
@@ -13,10 +14,19 @@ type ConfigServer struct {
 }
 
 func NewConfigServer(port int, cm *ConfigManager) *ConfigServer {
+
+	Handler := ChangeSettingsHandler {
+		cm: cm,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST admin/config", Handler.CheckChangeSettings)
+
 	return &ConfigServer {
 		port: port,
 		server: &http.Server{
-			Addr: "127.0.0.1:"+string(port),
+			Addr: fmt.Sprintf("127.0.0.1:%d", port),
+			Handler: mux,
 		},
 		cm: cm,
 	}
