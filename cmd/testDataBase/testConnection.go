@@ -2,16 +2,16 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
-	"time"
 	"user_service/config"
+	"user_service/infrastructure/postgres"
 )
 
-func main() {
+func main(){
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -21,20 +21,17 @@ func main() {
 	confFile := os.Getenv("CONFIG_FILE")
 
 	configManager := config.NewConfigManager()
-	configServer := config.NewConfigServer(ctx, 8081, configManager)
+	configServer := config.NewConfigServer(8081, configManager)
 
 	configServer.Start(ctx, confFile)
 
-	<- ctx.Done()
+	db, err := postgres.NewDataBase(ctx, configManager)
+	if err != nil {
+		fmt.Printf("FAIL: dont-conn in database %s\n", err)
+		return
+	} else {
+		fmt.Println("PASS: success conn")
+	}
 
-	ctxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelTimeout()
-
-	var wg sync.WaitGroup
-
-	wg.Go(func() {
-		configServer.Shutdown(ctxTimeout)
-	})
-
-	wg.Wait()
+	fmt.Printf("db %v\n", db)
 }

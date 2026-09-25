@@ -13,9 +13,10 @@ type ConfigServer struct {
 	cm 		*ConfigManager
 }
 
-func NewConfigServer(port int, cm *ConfigManager) *ConfigServer {
+func NewConfigServer(ctx context.Context, port int, cm *ConfigManager) *ConfigServer {
 
 	Handler := ChangeSettingsHandler {
+		ctx: ctx,
 		cm: cm,
 	}
 
@@ -34,7 +35,7 @@ func NewConfigServer(port int, cm *ConfigManager) *ConfigServer {
 
 func (cs *ConfigServer) Start(ctx context.Context, configFile string) {
 
-	cs.cm.Init(configFile)
+	cs.cm.Init(ctx, configFile)
 
 	go func() {
 		slog.Info("Start config server...")

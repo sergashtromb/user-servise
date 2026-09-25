@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/caarlos0/env/v11"
+	_ "github.com/joho/godotenv/autoload"
 	"github.com/knadh/koanf"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
@@ -18,27 +20,37 @@ type ConfigManager struct {
 	currSet 	*os.File
 	cnf 		atomic.Pointer[Config] 
 	kn 			*koanf.Koanf
-	listener 	map[string][]func(option any)
+	listener 	map[string][]func(ctx context.Context, option any)
 }
 
 type Config struct {
-	Port 		int 	`yaml:"port" env:"PORT" knoaf:"port" hot:"false"`
-	LogLevel 	string 	`yaml:"log_level" env:"LOG_LEVEL" knoaf:"log.level" hot:"true"`
+	Port 			int 			`yaml:"port" env:"PORT" koanf:"port" hot:"false"`
+	LogLevel 		string 			`yaml:"log_level" env:"LOG_LEVEL" koanf:"log.level" hot:"true"`
+	DataBaseConf 	DataBaseConfig 	`yaml:"data_base_config" envPrefix:"DB_"`
 }
 
+type DataBaseConfig struct {
+	User 		string 	`yaml:"user" env:"USER" koanf:"data_base_config.user" hot:"false"`
+	Password 	string 	`yaml:"password" env:"PASS" koanf:"data_base_config.pass" hot:"false"`
+	DataBase 	string 	`yaml:"name" env:"NAME" koanf:"data_base_config.name" hot:"false"`
+	Host 		string 	`yaml:"host" env:"HOST" koanf:"data_base_config.host" hot:"false"`
+	Port 		string 	`yaml:"port" env:"PORT" koanf:"data_base_config.port" hot:"false"`
+	MaxConn 	int 	`yaml:"max_conn" env:"MAX_CONN" koanf:"data_base_config.max_conn" hot:"true"`
+	MinConn 	int 	`yaml:"min_conn" env:"MIN_CONN" koanf:"data_base_config.min_conn" hot:"true"`
+}
 
 func NewConfigManager() *ConfigManager {
 	return &ConfigManager{
 		kn: koanf.New("."),
-		listener: make(map[string][]func(option any)),
+		listener: make(map[string][]func(ctx context.Context, option any)),
 	}
 }
 
-func (cm *ConfigManager) Init(configFile string) {
+func (cm *ConfigManager) Init(ctx context.Context, configFile string) {
 
 	cnf := setDefault()
 	hasConfFile := false
-	slog.Debug("Default", "cnf", cnf)
+	
 	f := file.Provider(configFile)
 
 	if err := cm.kn.Load(f, yaml.Parser()); err != nil {
@@ -61,15 +73,15 @@ func (cm *ConfigManager) Init(configFile string) {
 				return
 			}
 
-			cm.mergeChangesFromFile()
+			cm.mergeChangesFromFile(ctx)
 		})
 	}
-	slog.Debug("yaml", "cnf", cnf)
+	slog.Info("yaml", "cnf", cnf)
 	if err := env.Parse(cnf); err != nil {
 		slog.Error("Error parse env", "err", err)
 	}
 
-	slog.Debug("env", "cnf", cnf)
+	slog.Info("env", "cnf", cnf)
 	cm.cnf.Store(cnf)
 }
 
@@ -77,29 +89,34 @@ func (cm *ConfigManager) Get() *Config {
 	return cm.cnf.Load()
 }
 
-func (cm *ConfigManager) Update(newCnf *Config) {
+func (cm *ConfigManager) Update(ctx context.Context, newCnf *Config) {
 
 	oldCnf := cm.cnf.Swap(newCnf)
 
 	if oldCnf.LogLevel != newCnf.LogLevel {
-		cm.notify("log.level", newCnf.LogLevel)
+		cm.notify("log.level", ctx, newCnf.LogLevel)
+	}
+
+	if oldCnf.DataBaseConf.MaxConn != newCnf.DataBaseConf.MaxConn || 
+		oldCnf.DataBaseConf.MinConn != newCnf.DataBaseConf.MinConn {
+		cm.notify("data_base_config", ctx, newCnf.DataBaseConf)
 	}
 }
 
-func (cm *ConfigManager) OnChange(key string, fn func(opt any)) {
+func (cm *ConfigManager) OnChange(key string, fn func(ctx context.Context, opt any)) {
 
 	cm.rm.Lock()
 	defer cm.rm.Unlock()
 
 	_, ok := cm.listener[key]
 	if !ok {
-		cm.listener[key] = make([]func(option any), 0)
+		cm.listener[key] = make([]func(ctx context.Context, option any), 0)
 	}
 
 	cm.listener[key] = append(cm.listener[key], fn)
 }
 
-func (cm *ConfigManager) notify(key string, newValue any) {
+func (cm *ConfigManager) notify(key string, ctx context.Context, newValue any) {
 	cm.rm.RLock()
 	listeners, ok := cm.listener[key]
 	cm.rm.RUnlock()
@@ -109,21 +126,39 @@ func (cm *ConfigManager) notify(key string, newValue any) {
 	}
 
 	for _, fn := range listeners {
-		go fn(newValue)
+		go fn(ctx, newValue)
 	}
 }
 
-func (cm *ConfigManager) mergeChangesFromFile() {
+func (cm *ConfigManager) mergeChangesFromFile(ctx context.Context) {
 
-	cnf := cm.cnf.Load()
+	currCnf := cm.cnf.Load()
+	cnf := *currCnf
 	cnf.LogLevel = cm.kn.String("log.level")
+	cnf.DataBaseConf.MaxConn = cm.kn.Int("data_base_config.max_conn")
+	cnf.DataBaseConf.MinConn = cm.kn.Int("data_base_config.min_conn")
 	
-	cm.Update(cnf)
+	cm.Update(ctx, &cnf)
+}
+
+func (dbc *DataBaseConfig) ToString() string {
+
+	return fmt.Sprintf("user=%s password=%s host=%s port=%s dbname=%s pool_max_conns=%d pool_min_conns=%d",
+		dbc.User, dbc.Password, dbc.Host, dbc.Port, dbc.DataBase, dbc.MaxConn, dbc.MinConn)
 }
 
 func setDefault() *Config {
 	return &Config{
 		Port: 8080,
 		LogLevel: "info",
+		DataBaseConf: DataBaseConfig {
+			User: "",
+			Password: "",
+			DataBase: "",
+			Host: "",
+			Port: "",
+			MaxConn: 15,
+			MinConn: 3,
+		},
 	}
 }

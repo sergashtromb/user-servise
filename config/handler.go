@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 )
 
 type ChangeSettingsHandler struct {
+	ctx context.Context
 	cm *ConfigManager
 }
 
@@ -21,12 +23,17 @@ func (csh *ChangeSettingsHandler) CheckChangeSettings(w http.ResponseWriter, r *
 		return
 	}
 
-	cnf := csh.cm.Get()
+	currCnf := csh.cm.Get()
+	cnf := *currCnf
 
 	for key, value := range set {
 		switch key {
 		case "log.level":
 			cnf.LogLevel = value.(string)
+		case "data_base_config.max_conn":
+			cnf.DataBaseConf.MaxConn = value.(int)
+		case "data_base_config.min_conn":
+			cnf.DataBaseConf.MinConn = value.(int)
 		default:
 			slog.Warn("Error changing settings via HTTP: unknown key", "key", key)
 			http.Error(w, fmt.Sprintf("Error changing settings via HTTP: unknown key key=%v", key), http.StatusBadRequest)
@@ -34,5 +41,5 @@ func (csh *ChangeSettingsHandler) CheckChangeSettings(w http.ResponseWriter, r *
 		}
 	}
 
-	csh.cm.Update(cnf)
+	csh.cm.Update(csh.ctx, &cnf)
 }
