@@ -38,7 +38,7 @@ func (cm *ConfigManager) Init(configFile string) {
 
 	cnf := setDefault()
 	hasConfFile := false
-
+	slog.Debug("Default", "cnf", cnf)
 	f := file.Provider(configFile)
 
 	if err := cm.kn.Load(f, yaml.Parser()); err != nil {
@@ -64,11 +64,12 @@ func (cm *ConfigManager) Init(configFile string) {
 			cm.mergeChangesFromFile()
 		})
 	}
-
+	slog.Debug("yaml", "cnf", cnf)
 	if err := env.Parse(cnf); err != nil {
 		slog.Error("Error parse env", "err", err)
 	}
 
+	slog.Debug("env", "cnf", cnf)
 	cm.cnf.Store(cnf)
 }
 

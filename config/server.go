@@ -37,17 +37,17 @@ func (cs *ConfigServer) Start(ctx context.Context, configFile string) {
 	cs.cm.Init(configFile)
 
 	go func() {
+		slog.Info("Start config server...")
 		if err := cs.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("Failed server config", "err", err)
 		}
 	}()
+}
 
-	go func() {
-		select {
-		case <- ctx.Done():
-			if err := cs.server.Shutdown(ctx); err != nil {
-				slog.Error("Failed shutdown config server", "err", err)
-			}
-		}
-	}()
+func (cs *ConfigServer) Shutdown(ctx context.Context) {
+	
+	slog.Info("Close config server...")
+	if err := cs.server.Shutdown(ctx); err != nil {
+		slog.Error("Failed shutdown config server", "err", err)
+	}
 }

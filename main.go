@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 	"user_service/config"
 )
 
@@ -25,4 +27,14 @@ func main() {
 
 	<- ctx.Done()
 
+	ctxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelTimeout()
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		configServer.Shutdown(ctxTimeout)
+	})
+
+	wg.Wait()
 }
