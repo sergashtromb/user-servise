@@ -5,30 +5,27 @@ import (
 	"fmt"
 	"log/slog"
 	"sync/atomic"
+	"time"
 	"user_service/config"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DataBase struct {
-	IsChangeConnActive 	atomic.Bool
-	pool 				*pgxpool.Pool
-	newPool 			*pgxpool.Pool
+	pool atomic.Pointer[pgxpool.Pool]
 }
 
 func NewDataBase(ctx context.Context, cm *config.ConfigManager) (*DataBase, error) {
 
 	cnf := cm.Get()
-	
+
 	pool, err := createPool(ctx, &cnf.DataBaseConf)
 	if err != nil {
 		return nil, fmt.Errorf("Failed create config conn database :%s", err)
 	}
 
-	db := &DataBase{
-		pool: pool,
-	}
-	db.IsChangeConnActive.Store(false)
+	db := &DataBase{}
+	db.pool.Store(pool)
 
 	return db, nil
 }
@@ -37,22 +34,39 @@ func (db *DataBase) ChangePool(ctx context.Context, baseCnf *config.DataBaseConf
 
 	newPool, err := createPool(ctx, baseCnf)
 	if err != nil {
-		return nil, fmt.Errorf("Failed change pool err:%w", err)
+		fmt.Errorf("Failed change pool err:%w", err)
+		return
 	}
 
+	oldPool := db.pool.Swap(newPool)
+
+	go closePoolWithTimeout(oldPool, 30*time.Second)
 }
 
 func (db *DataBase) GetPool() *pgxpool.Pool {
+	return db.pool.Load()
+}
 
-	if db.IsChangeConnActive.Load() {
-		return db.newPool
-	} else {
-		return db.pool
+func closePoolWithTimeout(pool *pgxpool.Pool, timeout time.Duration) {
+
+	done := make(chan struct{})
+
+	go func() {
+		pool.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		slog.Info("The rotation was successful")
+	case <-time.After(timeout):
+		slog.Warn("Not all active connections managed to close due to the timeout during the rotation")
 	}
+
 }
 
 func createPool(ctx context.Context, dbc *config.DataBaseConfig) (*pgxpool.Pool, error) {
-	
+
 	pgxConf, err := pgxpool.ParseConfig(dbc.ToString())
 	if err != nil {
 		slog.Error("Failed create config conn database", "err", err)

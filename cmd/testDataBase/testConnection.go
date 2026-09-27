@@ -11,17 +11,17 @@ import (
 	"user_service/infrastructure/postgres"
 )
 
-func main(){
+func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	slog.Info("Start app")
-	
+
 	confFile := os.Getenv("CONFIG_FILE")
 
 	configManager := config.NewConfigManager()
-	configServer := config.NewConfigServer(8081, configManager)
+	configServer := config.NewConfigServer(ctx, 8081, configManager)
 
 	configServer.Start(ctx, confFile)
 
