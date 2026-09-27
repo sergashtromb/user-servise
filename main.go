@@ -17,7 +17,7 @@ func main() {
 	defer cancel()
 
 	slog.Info("Start app")
-	
+
 	confFile := os.Getenv("CONFIG_FILE")
 
 	configManager := config.NewConfigManager()
@@ -25,7 +25,7 @@ func main() {
 
 	configServer.Start(ctx, confFile)
 
-	<- ctx.Done()
+	<-ctx.Done()
 
 	ctxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelTimeout()

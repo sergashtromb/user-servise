@@ -47,6 +47,12 @@ func (db *DataBase) GetPool() *pgxpool.Pool {
 	return db.pool.Load()
 }
 
+func (db *DataBase) Shutdown() {
+
+	pool := db.pool.Load()
+	go closePoolWithTimeout(pool, 30*time.Second)
+}
+
 func closePoolWithTimeout(pool *pgxpool.Pool, timeout time.Duration) {
 
 	done := make(chan struct{})
@@ -62,7 +68,6 @@ func closePoolWithTimeout(pool *pgxpool.Pool, timeout time.Duration) {
 	case <-time.After(timeout):
 		slog.Warn("Not all active connections managed to close due to the timeout during the rotation")
 	}
-
 }
 
 func createPool(ctx context.Context, dbc *config.DataBaseConfig) (*pgxpool.Pool, error) {
