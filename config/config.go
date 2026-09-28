@@ -76,12 +76,11 @@ func (cm *ConfigManager) Init(ctx context.Context, configFile string) {
 			cm.mergeChangesFromFile(ctx)
 		})
 	}
-	slog.Info("yaml", "cnf", cnf)
+	
 	if err := env.Parse(cnf); err != nil {
 		slog.Error("Error parse env", "err", err)
 	}
 
-	slog.Info("env", "cnf", cnf)
 	cm.cnf.Store(cnf)
 }
 

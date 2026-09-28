@@ -21,7 +21,7 @@ func NewDataBase(ctx context.Context, cm *config.ConfigManager) (*DataBase, erro
 
 	pool, err := createPool(ctx, &cnf.DataBaseConf)
 	if err != nil {
-		return nil, fmt.Errorf("Failed create config conn database :%s", err)
+		return nil, err
 	}
 
 	db := &DataBase{}
