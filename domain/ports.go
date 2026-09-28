@@ -12,5 +12,4 @@ type UserStore interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	GetByPhone(ctx context.Context, phone string) (*User, error)
-	CheckForDuble(ctx context.Context, userOpt *UserOpt) (bool, error)
 }
