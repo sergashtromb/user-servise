@@ -6,6 +6,12 @@ const (
 	ErrUserAlreadyExists = "User already exists"
 	CodeDbErrUserAlreadyExists = "001"
 
+	ErrFieldCantBeEmpty = "Field can't be empty"
+	CodeDbErrFieldCantBeEmpty = "002"
+
+	ErrConvertQuery = "Failed convert sql from object"
+	CodeDbErrConvertQuery = "003"
+
 	CodeErrUniqueViolation = "23505"
 )
 

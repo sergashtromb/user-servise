@@ -7,6 +7,7 @@ import (
 	"user_service/domain"
 	"uuid"
 
+	"github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -76,7 +77,45 @@ func (us *UserStore) Create(ctx context.Context, user *domain.User) error {
 
 func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.UserOpt) error {
 
-	
+	psql := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar)
+	qr := psql.Update("users").Where(squirrel.Eq{"id": id,})
+
+	if userOpt.UserName.Define {
+		if !userOpt.UserName.Valid {
+			return NewDbError(ErrFieldCantBeEmpty, CodeDbErrFieldCantBeEmpty, []string{"username"})
+		}
+
+		qr = qr.Set("username", userOpt.UserName.Value)
+	}
+
+	if userOpt.Email.Define {
+		if userOpt.Email.Valid {
+			qr = qr.Set("email", userOpt.Email.Value)
+		} else {
+			qr = qr.Set("email", nil)
+		}
+	}
+
+	if userOpt.Phone.Define {
+		if userOpt.Phone.Valid {
+			qr = qr.Set("phone", userOpt.Phone.Value)
+		} else {
+			qr = qr.Set("phone", nil)
+		}
+	}
+
+	if userOpt.IsDeleted.Define {
+		if !userOpt.IsDeleted.Valid {
+			return NewDbError(ErrFieldCantBeEmpty, CodeDbErrFieldCantBeEmpty, []string{"is_deleted"})	
+		} 
+
+		qr = qr.Set("phone", userOpt.IsDeleted.Value)
+	}
+
+	query, args, err := qr.ToSql()
+	if err != nil {
+		return NewDbError(ErrConvertQuery, CodeDbErrConvertQuery, make([]string, 0))
+	}
 
 	return nil
 }
