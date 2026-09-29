@@ -6,6 +6,9 @@ import (
 	"sync"
 	"time"
 	"user_service/domain"
+
+	"github.com/jackc/pgx"
+	"github.com/jackc/pgx/v5"
 )
 
 type AuditService struct {
@@ -55,7 +58,7 @@ func (as *AuditService) logWorker(ctx context.Context) {
 		case val, ok := <- as.queue:
 
 			if !ok {
-				if err := as.writeBatch(); err != nil {
+				if err := as.writeBatch(ctx); err != nil {
 					slog.Error("Failed butching logs in db", "err", err)
 				}	
 				return
@@ -65,7 +68,7 @@ func (as *AuditService) logWorker(ctx context.Context) {
 
 			if len(as.batch) == as.maxSize {
 
-				if err := as.writeBatch(); err != nil {
+				if err := as.writeBatch(ctx); err != nil {
 					slog.Error("Failed butching logs in db", "err", err)
 				}	
 
@@ -75,11 +78,11 @@ func (as *AuditService) logWorker(ctx context.Context) {
 			}
 
 		case <- ticker.C:
-			if err := as.writeBatch(); err != nil {
+			if err := as.writeBatch(ctx); err != nil {
 				slog.Error("Failed butching logs in db", "err", err)
 			}
 		case <-ctx.Done():
-			if err := as.writeBatch(); err != nil {
+			if err := as.writeBatch(ctx); err != nil {
 				slog.Error("Failed butching logs in db", "err", err)
 			}
 			return
@@ -87,6 +90,30 @@ func (as *AuditService) logWorker(ctx context.Context) {
 	}
 }
 
-func (as *AuditService) writeBatch() error {
+func (as *AuditService) writeBatch(ctx context.Context) error {
+
+	pool := as.db.GetPool()
+
+	_, err := pool.CopyFrom(ctx, 
+		[]string{"audit"}, 
+		[]string{"event_time", "type", "place", "entity_id",
+			"success", "error", "old_data", "new_data", "metadata"},
+			pgx.CopyFromSlice(len(as.batch), func(i int) ([]any, error) {
+				return []any {
+					as.batch[i].Timestamp,
+					as.batch[i].Type,
+					as.batch[i].Place,
+					as.batch[i].EntityId,
+					as.batch[i].Success,
+					as.batch[i].Error,
+					as.batch[i].OldData,
+					as.batch[i].NewData,
+					as.batch[i].Metadata,
+				}, nil
+			}))
+			
+	if err != nil {
+		return err
+	}
 	return nil
 }

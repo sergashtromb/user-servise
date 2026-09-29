@@ -35,8 +35,8 @@ type AuditEvent struct {
 	Timestamp 	time.Time
 
 	// for store
-	oldData 	any
-	newData 	any
+	OldData 	any
+	NewData 	any
 
 	Metadata map[string]any
 }
