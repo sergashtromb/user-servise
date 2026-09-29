@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type EventType string
 
@@ -29,6 +32,7 @@ type AuditEvent struct {
 	Success 	bool
 	Error 		string
 	EntityId 	string
+	Timestamp 	time.Time
 
 	// for store
 	oldData 	any

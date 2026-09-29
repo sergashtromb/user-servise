@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"user_service/config"
 	"user_service/infrastructure/postgres"
+	"user_service/util"
 
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -22,6 +23,8 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	util.LoadEnvFile()
 
 	slog.Info("Migrate start...")
 	confFile := os.Getenv("CONFIG_FILE")
