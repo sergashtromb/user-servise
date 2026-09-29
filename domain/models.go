@@ -22,7 +22,3 @@ type UserOpt struct {
 	Phone 		opt.Field[string] 	`json:"phone"`
 	IsDeleted 	opt.Field[bool] 	`json:"is_delete"`
 }
-
-type ValueUserOpt struct {
-
-}

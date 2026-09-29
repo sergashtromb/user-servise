@@ -97,7 +97,7 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.U
 			return NewDbError(ErrFieldCantBeEmpty, CodeDbErrFieldCantBeEmpty, []string{"is_deleted"})	
 		} 
 
-		qr = qr.Set("phone", userOpt.IsDeleted.Value)
+		qr = qr.Set("is_deleted", userOpt.IsDeleted.Value)
 	}
 
 	query, args, err := qr.ToSql()
