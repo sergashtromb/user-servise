@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"user_service/config"
@@ -109,7 +110,58 @@ func TestCreateUserStore(t *testing.T) {
 	}
 }
 
-//01a0e653-37d4-78d5-aac0-0b2ccfad1963 test user
+func TestUpdateUserStore(t *testing.T) {
+
+	userStore, err := loadAndGetUserStore()
+	if err != nil {
+		t.Errorf("%v\n", err)
+	}
+
+	// 1 pass
+	// 2 pass
+	// 3 error
+	// 4 pass
+	// 5 error
+	tests := []string{
+		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "username": "newTestname", "email": "b@b.com" } }`,   
+		`{ "01a0e715-e4fa-7985-9d2c-a41019053711": { "username": "B_name", "phone": "+79999999999" } }`, 
+		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "username": "B_name" } }`,                         
+		`{ "01a0e715-e4fa-7985-9d2c-a41019053711": { "email": "a@a.com" } }`,                           
+		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "phone": "+79999999999" } }`,                   
+	}
+
+	for i, jsonStr := range tests {
+		jsonMap := make(map[string]domain.UserOpt)
+
+		if err := json.Unmarshal([]byte(jsonStr), &jsonMap); err != nil {
+			t.Fatalf("Ошибка десериализации в тесте №%d: %v", i+1, err)
+		}
+
+		var key string
+		var value domain.UserOpt
+		for k, v := range jsonMap {
+			key = k
+			value = v
+			break 
+		}
+
+		err := userStore.Update(context.TODO(), uuid.MustParse(key), &value)
+
+		testNum := i + 1
+
+		switch testNum {
+		case 1, 2, 4: // pass
+			if err != nil {
+				t.Errorf("Failed test №%d: expected no error, got %v", testNum, err)
+			}
+		case 3, 5: // error
+			if err == nil {
+				t.Errorf("Failed test №%d: expected error, but got nil", testNum)
+			}
+		}
+	}
+}
+
 
 func loadAndGetUserStore() (*postgres.UserStore, error) {
 	ctx := context.Background()

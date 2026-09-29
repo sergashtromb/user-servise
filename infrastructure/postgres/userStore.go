@@ -2,13 +2,11 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"user_service/domain"
 	"uuid"
 
 	"github.com/Masterminds/squirrel"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type UserStore struct {
@@ -51,22 +49,9 @@ func (us *UserStore) Create(ctx context.Context, user *domain.User) error {
 		VALUES ($1, $2, $3, $4);`, &user.UserName, &user.Password, &user.Email, &user.Phone)
 
 	if err != nil {
-		var pgErr *pgconn.PgError
-
-		if errors.As(err, &pgErr) && pgErr.Code == CodeErrUniqueViolation {
-
-			dbErr := NewDbError(ErrUserAlreadyExists, CodeDbErrUserAlreadyExists, make([]string, 0))
-
-			switch pgErr.ConstraintName {
-			case "users_username_idx":
-				dbErr.Fields = append(dbErr.Fields, "username")
-			case "users_email_idx":
-				dbErr.Fields = append(dbErr.Fields, "email")
-			case "users_phone_idx":
-				dbErr.Fields = append(dbErr.Fields, "email")
-			}
-
-			return dbErr
+		errUnicViolation := DbErrorFromUnicViolation(err)
+		if errUnicViolation != nil {
+			return errUnicViolation
 		} else {
 			return err
 		}
@@ -78,8 +63,8 @@ func (us *UserStore) Create(ctx context.Context, user *domain.User) error {
 func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.UserOpt) error {
 
 	psql := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar)
-	qr := psql.Update("users").Where(squirrel.Eq{"id": id,})
-
+	qr := psql.Update("users").Where(squirrel.Eq{"id": id.String(),})
+	
 	if userOpt.UserName.Define {
 		if !userOpt.UserName.Valid {
 			return NewDbError(ErrFieldCantBeEmpty, CodeDbErrFieldCantBeEmpty, []string{"username"})
@@ -115,6 +100,18 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.U
 	query, args, err := qr.ToSql()
 	if err != nil {
 		return NewDbError(ErrConvertQuery, CodeDbErrConvertQuery, make([]string, 0))
+	}
+
+	pool := us.db.GetPool()
+
+	_, err = pool.Exec(ctx, query, args...)
+	if err != nil {
+		errUnicViolation := DbErrorFromUnicViolation(err)
+		if errUnicViolation != nil {
+			return errUnicViolation
+		} else {
+			return err
+		}
 	}
 
 	return nil
