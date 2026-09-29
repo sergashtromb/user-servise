@@ -17,6 +17,9 @@ const (
 	ErrConvertQuery = "Failed convert sql from object"
 	CodeDbErrConvertQuery = "003"
 
+	ErrUserDontExist = "User don't exist"
+	CodeDbErrUserDontExist = "004"
+
 	CodeErrUniqueViolation = "23505"
 )
 

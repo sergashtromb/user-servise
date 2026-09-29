@@ -162,6 +162,81 @@ func TestUpdateUserStore(t *testing.T) {
 	}
 }
 
+func TestDeleteUserStore(t *testing.T) {
+
+	userStore, err := loadAndGetUserStore()
+	if err != nil {
+		t.Errorf("%v\n", err)
+	}
+
+	userExist := uuid.MustParse("01a0eb3a-3fa0-74d2-8356-d01629940b23")
+	userNoExist := uuid.NewV7()
+
+	err = userStore.Delete(context.TODO(), userExist)
+	if err != nil {
+		t.Errorf("Failed test dont delete exist user %v\n", err)
+	}
+
+	err = userStore.Delete(context.TODO(), userNoExist)
+	if err == nil {
+		t.Errorf("Failed test dont returning error for don't exist user\n")
+	}
+}
+
+func TestGetUserByEmailUserStore(t *testing.T) {
+
+	userStore, err := loadAndGetUserStore()
+	if err != nil {
+		t.Errorf("%v\n", err)
+	}
+
+	existUser := "b@b.com"
+	noExistUser := "c@c.com"
+
+	existUserStruct := domain.User {
+		Id: uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		UserName: "newTestname",
+		Password: "111",
+		Email: "b@b.com",
+		Phone: "+71111111111",
+		IsDeleted: false,
+	}
+
+	user, err := userStore.GetByEmail(context.TODO(), existUser)
+	if err != nil {
+		t.Errorf("Failed test dont find user err %v\n", err)
+	}
+
+	if user.Id != existUserStruct.Id {
+		t.Error("Failed test id dont equal\n")
+	}
+
+	if user.UserName != existUserStruct.UserName {
+		t.Error("Failed test usernamePassword dont equal\n")
+	}
+
+	if user.Password != existUserStruct.Password {
+		t.Error("Failed test Password dont equal\n")
+	}
+
+	if user.Email != existUserStruct.Email {
+		t.Error("Failed test Email dont equal\n")
+	}
+
+	if user.Phone != existUserStruct.Phone {
+		t.Error("Failed test Phone dont equal\n")
+	}
+
+	if user.IsDeleted != existUserStruct.IsDeleted {
+		t.Error("Failed test IsDeleted dont equal\n")
+	}
+
+	_, err = userStore.GetByEmail(context.TODO(), noExistUser)
+
+	if err == nil {
+		t.Error("Failed test must returned error user dont exist")
+	}
+}
 
 func loadAndGetUserStore() (*postgres.UserStore, error) {
 	ctx := context.Background()

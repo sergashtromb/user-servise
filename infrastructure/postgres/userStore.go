@@ -2,11 +2,14 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"strings"
 	"user_service/domain"
 	"uuid"
 
 	"github.com/Masterminds/squirrel"
+	"github.com/jackc/pgx/v5"
 )
 
 type UserStore struct {
@@ -115,4 +118,76 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.U
 	}
 
 	return nil
+}
+
+func (us *UserStore) Delete(ctx context.Context, id uuid.UUID) error {
+
+	pool := us.db.GetPool()
+	var exist bool
+	err := pool.QueryRow(ctx, `
+		UPDATE users 
+		SET is_deleted = true 
+		WHERE 
+			id = $1 AND is_deleted = false 
+		RETURNING true;`, id).Scan(&exist)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return NewDbError(ErrUserDontExist, CodeDbErrUserDontExist, make([]string, 0))
+	}
+	
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+// TODO write universal get method with domain.UserOpt
+func (us *UserStore) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
+
+	trEmail := strings.TrimSpace(email)
+	pool := us.db.GetPool()
+
+	var user domain.User
+	err := pool.QueryRow(ctx, 
+		`SELECT
+			id, username, pass, email, phone, is_deleted, created_at
+		FROM users
+		WHERE
+			email = $1 AND is_deleted = false`, &trEmail).Scan(
+				&user.Id, &user.UserName, &user.Password, &user.Email, &user.Phone, &user.IsDeleted, &user.CreatedAt)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, NewDbError(ErrUserDontExist, CodeDbErrUserDontExist, make([]string, 0))
+		} else {
+			return nil, err
+		}
+	}
+
+	return &user, nil
+}
+
+func (us *UserStore) GetByPhone(ctx context.Context, phone string) (*domain.User, error) {
+
+	trPhone := strings.TrimSpace(phone)
+	pool := us.db.GetPool()
+
+	var user domain.User
+	err := pool.QueryRow(ctx, 
+		`SELECT
+			id, username, pass, email, phone, is_deleted, created_at
+		FROM users
+		WHERE
+			phone = $1 AND is_deleted = false`, &trPhone).Scan(
+				&user.Id, &user.UserName, &user.Password, &user.Email, &user.Phone, &user.IsDeleted, &user.CreatedAt)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, NewDbError(ErrUserDontExist, CodeDbErrUserDontExist, make([]string, 0))
+		} else {
+			return nil, err
+		}
+	}
+
+	return &user, nil
 }
