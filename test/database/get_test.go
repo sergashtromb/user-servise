@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 	"user_service/config"
 	"user_service/domain"
 	"user_service/infrastructure/postgres"
@@ -238,6 +239,38 @@ func TestGetUserByEmailUserStore(t *testing.T) {
 	}
 }
 
+func TestBatchLogInAuditService(t *testing.T) {
+
+	ctx := context.Background()
+
+	db, err := loadAndGetDB()
+	if err != nil {
+		t.Errorf("%v\n", err)
+	}
+
+	auditService := postgres.NewAuditService(db, 50, 1*time.Second, 5*time.Second)
+	auditService.Init()
+
+	errstr := "pass dont correst"
+	dbErr := postgres.ErrUserAlreadyExists
+
+	e1 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, true,  nil, "123")
+	e2 := domain.NewAuditEvent(domain.EventDeletedUser, domain.EventPlaceStore, true,  nil, "1583")
+	e3 := domain.NewAuditEvent(domain.EventLoginSucces, domain.EventPlaceHandler, true,  nil, "4568")
+	e4 := domain.NewAuditEvent(domain.EventLoginFailed, domain.EventPlaceHandler, false,  &errstr, "156489")
+	e5 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, false,  &dbErr, "967865")
+
+	for range 11 {
+		auditService.Log(ctx, e1)
+		auditService.Log(ctx, e2)
+		auditService.Log(ctx, e3)
+		auditService.Log(ctx, e4)
+		auditService.Log(ctx, e5)
+	}
+	
+	time.Sleep(10*time.Second)
+}
+
 func loadAndGetUserStore() (*postgres.UserStore, error) {
 	ctx := context.Background()
 	util.LoadEnvFile()
@@ -254,6 +287,22 @@ func loadAndGetUserStore() (*postgres.UserStore, error) {
 	userStore := postgres.NewUserStore(db)
 
 	return userStore, nil
+}
+
+func loadAndGetDB() (*postgres.DataBase, error) {
+	ctx := context.Background()
+	util.LoadEnvFile()
+
+	cm := config.NewConfigManager()
+
+	cm.Init(ctx, "")
+
+	db, err := postgres.NewDataBase(ctx, cm)
+	if err != nil {
+		return nil, fmt.Errorf("Failed connect in data base %v\n", err)
+	}
+
+	return db, nil
 }
 
 func loadAndGetPool() (*pgxpool.Pool, error) {

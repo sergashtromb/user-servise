@@ -30,7 +30,7 @@ type AuditEvent struct {
 	Type 		EventType
 	Place 		EventPlace
 	Success 	bool
-	Error 		string
+	Error 		*string
 	EntityId 	string
 	Timestamp 	time.Time
 
@@ -42,15 +42,16 @@ type AuditEvent struct {
 }
 
 type AuditService interface {
-	Log(ctx context.Context, event *AuditEvent)
+	Log(ctx context.Context, event *AuditEvent) error
 }
 
-func NewAuditEvent(tp EventType, place EventPlace, succ bool, err string, entId string) *AuditEvent {
+func NewAuditEvent(tp EventType, place EventPlace, succ bool, err *string, entId string) *AuditEvent {
 	return &AuditEvent{
 		Type: tp, 
 		Place: place,
 		Success: succ,
 		Error: err,
 		EntityId: entId,
+		Timestamp: time.Now(),
 	}
 }

@@ -2,53 +2,95 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
+
 	"time"
 	"user_service/domain"
 
-	"github.com/jackc/pgx"
 	"github.com/jackc/pgx/v5"
 )
 
+var (
+	ErrAuditStopped = errors.New("Audit is stopped!")
+)
+
 type AuditService struct {
-	queue 		chan *domain.AuditEvent
-	batch 		[]*domain.AuditEvent
-	maxSize 	int
-	timeToSend 	time.Duration
-	db 			*DataBase
-	on 			sync.Once
+	queue 			chan *domain.AuditEvent
+	batch 			[]*domain.AuditEvent
+	maxSize 		int
+	db 				*DataBase
+	wgForProd 		sync.WaitGroup
+	wg 				sync.WaitGroup
+	rm 				sync.RWMutex
+	closed 			bool
+	timeToSend 		time.Duration
+	timeToFinish 	time.Duration
+	shutTrigger 	chan struct{}
 }
 
-func NewAuditService(db *DataBase, ms int, tts time.Duration) *AuditService {
+func NewAuditService(db *DataBase, ms int, tts time.Duration, ttf time.Duration) *AuditService {
 	return &AuditService{
-		queue: make(chan *domain.AuditEvent),
-		batch: make([]*domain.AuditEvent, 0, ms),
-		maxSize: ms,
-		timeToSend: tts,
-		db: db,
+		queue: 			make(chan *domain.AuditEvent, ms*2),
+		batch: 			make([]*domain.AuditEvent, 0, ms*2),
+		maxSize: 		ms,
+		timeToSend: 	tts,
+		timeToFinish: 	ttf,
+		db: 			db,
+		shutTrigger: 	make(chan struct{}, 1),
+		closed: 		false,	
 	}
 }
 
-func (as *AuditService) Log(ctx context.Context, event *domain.AuditEvent) {
+func (as *AuditService) Init() {
+	as.wg.Add(1)
 	go func() {
-		select {
-		case <- ctx.Done():
-			as.closeChanel()
-			return
-		case as.queue <- event:
-			return
-		}
+		defer as.wg.Done()
+		as.logWorker()
 	}()
 }
 
-func (as *AuditService) closeChanel() {
-	as.on.Do(func() {
-		close(as.queue)
-	})
+func (as *AuditService) Log(ctx context.Context, event *domain.AuditEvent) error {
+
+	as.rm.RLock()
+	if as.closed {
+		as.rm.RUnlock()
+		return ErrAuditStopped
+	}
+	as.wgForProd.Add(1)
+	as.rm.RUnlock()
+
+	select {
+	case <- as.shutTrigger:
+		as.wgForProd.Done()
+		return ErrAuditStopped
+	case <- ctx.Done():
+		as.wgForProd.Done()
+		return ctx.Err()
+	case as.queue <- event:
+		as.wgForProd.Done()
+		return nil
+	}
 }
 
-func (as *AuditService) logWorker(ctx context.Context) {
+func (as *AuditService) Shutdown() {
+
+	as.rm.Lock()
+	as.closed = true
+	as.rm.Unlock()
+
+	close(as.shutTrigger)
+
+	go func() {
+		as.wgForProd.Wait()
+		close(as.queue)
+	}()
+
+	as.wg.Wait()
+}
+
+func (as *AuditService) logWorker() {
 
 	ticker := time.NewTicker(as.timeToSend)
 	defer ticker.Stop()
@@ -58,39 +100,42 @@ func (as *AuditService) logWorker(ctx context.Context) {
 		case val, ok := <- as.queue:
 
 			if !ok {
-				if err := as.writeBatch(ctx); err != nil {
-					slog.Error("Failed butching logs in db", "err", err)
-				}	
+				as.flush()	
 				return
 			}
 
 			as.batch = append(as.batch, val)
 
-			if len(as.batch) == as.maxSize {
+			if len(as.batch) >= as.maxSize {
 
-				if err := as.writeBatch(ctx); err != nil {
-					slog.Error("Failed butching logs in db", "err", err)
-				}	
-
-				as.batch = as.batch[:0]
-
+				as.flush()
 				ticker.Reset(as.timeToSend)
 			}
 
 		case <- ticker.C:
-			if err := as.writeBatch(ctx); err != nil {
-				slog.Error("Failed butching logs in db", "err", err)
-			}
-		case <-ctx.Done():
-			if err := as.writeBatch(ctx); err != nil {
-				slog.Error("Failed butching logs in db", "err", err)
-			}
-			return
+			as.flush()
 		}
 	}
 }
 
-func (as *AuditService) writeBatch(ctx context.Context) error {
+func (as *AuditService) flush() {
+
+	if len(as.batch) == 0 {
+		return
+	}
+
+	timeout, timeoutCl := context.WithTimeout(context.Background(), as.timeToFinish)
+	defer timeoutCl()
+
+	if err := as.writeBatch(timeout, as.batch); err != nil {
+		slog.Error("Failed butching logs in db", "err", err, "lost", len(as.batch))
+	}
+
+	clear(as.batch)
+	as.batch = as.batch[:0]
+}
+
+func (as *AuditService) writeBatch(ctx context.Context, batch []*domain.AuditEvent) error {
 
 	pool := as.db.GetPool()
 
@@ -98,17 +143,17 @@ func (as *AuditService) writeBatch(ctx context.Context) error {
 		[]string{"audit"}, 
 		[]string{"event_time", "type", "place", "entity_id",
 			"success", "error", "old_data", "new_data", "metadata"},
-			pgx.CopyFromSlice(len(as.batch), func(i int) ([]any, error) {
+			pgx.CopyFromSlice(len(batch), func(i int) ([]any, error) {
 				return []any {
-					as.batch[i].Timestamp,
-					as.batch[i].Type,
-					as.batch[i].Place,
-					as.batch[i].EntityId,
-					as.batch[i].Success,
-					as.batch[i].Error,
-					as.batch[i].OldData,
-					as.batch[i].NewData,
-					as.batch[i].Metadata,
+					batch[i].Timestamp,
+					batch[i].Type,
+					batch[i].Place,
+					batch[i].EntityId,
+					batch[i].Success,
+					batch[i].Error,
+					batch[i].OldData,
+					batch[i].NewData,
+					batch[i].Metadata,
 				}, nil
 			}))
 			
