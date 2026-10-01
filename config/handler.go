@@ -25,8 +25,8 @@ func (csh *ChangeSettingsHandler) CheckChangeSettings(w http.ResponseWriter, r *
 
 	currCnf := csh.cm.Get()
 	cnf := *currCnf
-
-	for key, value := range set {
+	// TODO add redis conf
+	for key, value := range set {	
 		switch key {
 		case "log.level":
 			cnf.LogLevel = value.(string)

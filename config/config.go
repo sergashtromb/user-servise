@@ -27,6 +27,7 @@ type Config struct {
 	Port 			int 			`yaml:"port" env:"PORT" koanf:"port" hot:"false"`
 	LogLevel 		string 			`yaml:"log_level" env:"LOG_LEVEL" koanf:"log.level" hot:"true"`
 	DataBaseConf 	DataBaseConfig 	`yaml:"data_base_config" envPrefix:"DB_"`
+	RedisConf 		RedisConfig 	`yaml:"redis_config" envPrefix:"RD_"`
 }
 
 type DataBaseConfig struct {
@@ -37,6 +38,22 @@ type DataBaseConfig struct {
 	Port 		string 	`yaml:"port" env:"PORT" koanf:"data_base_config.port" hot:"false"`
 	MaxConn 	int 	`yaml:"max_conn" env:"MAX_CONN" koanf:"data_base_config.max_conn" hot:"true"`
 	MinConn 	int 	`yaml:"min_conn" env:"MIN_CONN" koanf:"data_base_config.min_conn" hot:"true"`
+}
+
+type RedisConfig struct {
+	Port 			string `yaml:"port" env:"PORT" koanf:"redis_config.port" hot:"false"`
+	Host 			string `yaml:"host" env:"HOST" koanf:"redis_config.host" hot:"false"`
+	Password 		string `yaml:"pass" env:"PASS" koanf:"redis_config.pass" hot:"false"`
+	DbNum 			int    `yaml:"db" env:"DB_NUM" koanf:"redis_config.db" hot:"false"`
+	PoolSize 		int    `yaml:"poolsize" env:"POOLSIZE" koanf:"redis_config.poolsize" hot:"false"`
+	MinIdleConn 	int    `yaml:"min_idle_conn" env:"MIN_IDLE_CONN" koanf:"redis_config.min_idle_conn" hot:"true"`
+	MaxIdleConn 	int    `yaml:"max_idle_conn" env:"MAX_IDLE_CONN" koanf:"redis_config.max_idle_conn" hot:"true"`
+	ConnMaxIdleTime int    `yaml:"conn_max_idle_time" env:"CONN_MAX_IDLE_TIME_MN" koanf:"redis_config.conn_max_idle_time" hot:"true"`
+	ConnMaxLifetime int    `yaml:"conn_max_lifetime" env:"CONN_MAX_LIFETIME_MN" koanf:"redis_config.conn_max_lifetime" hot:"true"`
+	DialTimeout 	int    `yaml:"dial_timeout" env:"DIAL_TIMEOUT_SC" koanf:"redis_config.dial_timeout" hot:"true"`
+	ReadTimeout 	int    `yaml:"read_timeout" env:"READ_TIMEOUT_SC" koanf:"redis_config.read_timeout" hot:"true"`
+	WriteTimeout 	int    `yaml:"write_timeout" env:"WRITE_TIMEOUT_SC" koanf:"redis_config.write_timeout" hot:"true"`
+	PoolTimeout 	int    `yaml:"pool_timeout" env:"POOL_TIMEOUT_SC" koanf:"redis_config.pool_timeout" hot:"true"`
 }
 
 func NewConfigManager() *ConfigManager {
@@ -91,7 +108,7 @@ func (cm *ConfigManager) Get() *Config {
 func (cm *ConfigManager) Update(ctx context.Context, newCnf *Config) {
 
 	oldCnf := cm.cnf.Swap(newCnf)
-
+	// TODO add redis conf
 	if oldCnf.LogLevel != newCnf.LogLevel {
 		cm.notify("log.level", ctx, newCnf.LogLevel)
 	}
@@ -136,7 +153,7 @@ func (cm *ConfigManager) mergeChangesFromFile(ctx context.Context) {
 	cnf.LogLevel = cm.kn.String("log.level")
 	cnf.DataBaseConf.MaxConn = cm.kn.Int("data_base_config.max_conn")
 	cnf.DataBaseConf.MinConn = cm.kn.Int("data_base_config.min_conn")
-	
+	// TODO add redis conf
 	cm.Update(ctx, &cnf)
 }
 
@@ -158,6 +175,21 @@ func setDefault() *Config {
 			Port: "",
 			MaxConn: 15,
 			MinConn: 3,
+		},
+		RedisConf: RedisConfig {
+			Port: "",
+			Host: "",
+			Password: "",
+			DbNum: 0,
+			PoolSize: 20,
+			MinIdleConn: 3,
+			MaxIdleConn: 8,
+			ConnMaxIdleTime: 2,
+			ConnMaxLifetime: 10,
+			DialTimeout: 5,
+			ReadTimeout: 3,
+			WriteTimeout: 3,
+			PoolTimeout: 5,
 		},
 	}
 }
