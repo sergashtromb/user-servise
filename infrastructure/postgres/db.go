@@ -34,7 +34,7 @@ func (db *DataBase) ChangePool(ctx context.Context, baseCnf *config.DataBaseConf
 
 	newPool, err := createPool(ctx, baseCnf)
 	if err != nil {
-		fmt.Errorf("Failed change pool err:%w", err)
+		slog.Error("Failed change pool", "err", err)
 		return
 	}
 
@@ -87,7 +87,7 @@ func createPool(ctx context.Context, dbc *config.DataBaseConfig) (*pgxpool.Pool,
 	err = pool.Ping(ctx)
 	if err != nil {
 		slog.Error("Unable to connect to the database", "err", err)
-		return nil, fmt.Errorf("Unable to connect to the database", "err", err)
+		return nil, fmt.Errorf("Unable to connect to the database %v", err)
 	}
 
 	return pool, nil

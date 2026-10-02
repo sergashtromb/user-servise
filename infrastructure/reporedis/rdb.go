@@ -15,37 +15,37 @@ import (
 
 var (
 	ErrRepositoryClosed = errors.New("repository closed")
-	ErrCloseTimeout 	= errors.New("close timeout")
+	ErrCloseTimeout     = errors.New("close timeout")
 )
 
 type Repository struct {
-	clientPoint 	*clientInstance
-	rm 				sync.RWMutex
-	closed 			bool
-	timeForClose 	time.Duration
+	clientPoint  *clientInstance
+	rm           sync.RWMutex
+	closed       bool
+	timeForClose time.Duration
 }
 
 type clientInstance struct {
-	rClient 		*redis.Client
-	wg 				sync.WaitGroup
-	so 				sync.Once
-	err 			error
-	activeGor 		atomic.Int64
+	rClient   *redis.Client
+	wg        sync.WaitGroup
+	so        sync.Once
+	err       error
+	activeGor atomic.Int64
 }
 
 func NewRepository(ctx context.Context, cm *config.ConfigManager) (*Repository, error) {
 
 	rc := cm.Get().RedisConf
-	
+
 	clInst, err := createClientInstance(ctx, &rc)
 	if err != nil {
 		return nil, err
 	}
 
 	rep := &Repository{
-		clientPoint: clInst,
-		closed: false,
-		timeForClose: 5*time.Minute,
+		clientPoint:  clInst,
+		closed:       false,
+		timeForClose: 5 * time.Minute,
 	}
 
 	return rep, nil
@@ -57,7 +57,7 @@ func (rep *Repository) Do(ctx context.Context, fn func(ctx context.Context, clie
 
 	if rep.closed {
 		rep.rm.RUnlock()
-		return ErrRepositoryClosed	
+		return ErrRepositoryClosed
 	}
 
 	inst := rep.clientPoint
@@ -67,7 +67,7 @@ func (rep *Repository) Do(ctx context.Context, fn func(ctx context.Context, clie
 
 	defer func() {
 		inst.activeGor.Add(-1)
-	 	inst.wg.Done()
+		inst.wg.Done()
 	}()
 
 	return fn(ctx, inst.rClient)
@@ -84,7 +84,7 @@ func (rep *Repository) ChangeClient(ctx context.Context, rc *config.RedisConfig)
 
 	if rep.closed {
 		rep.rm.Unlock()
-		newInstans.Close(1*time.Minute)
+		newInstans.Close(rep.timeForClose)
 		return ErrRepositoryClosed
 	}
 
@@ -133,10 +133,10 @@ func (ci *clientInstance) Close(timeForClose time.Duration) error {
 
 		select {
 		case <-done:
-		case <-time.After(1*time.Second):
-			// TODO add log message
-		}			
-		
+		case <-time.After(1 * time.Second):
+			slog.Warn("Pending operations when closing in quantity", "qnty", ci.activeGor.Load())
+		}
+
 	})
 
 	return ci.err
@@ -146,21 +146,20 @@ func createClientInstance(ctx context.Context, redisConfig *config.RedisConfig) 
 
 	client := redis.NewClient(&redis.Options{
 		Addr: fmt.Sprintf("%s:%s", redisConfig.Host, redisConfig.Port),
-		DB: redisConfig.DbNum,
+		DB:   redisConfig.DbNum,
 
 		Password: redisConfig.Password,
 
-		PoolSize: redisConfig.PoolSize,
-		MinIdleConns: redisConfig.MinIdleConn,
-		MaxIdleConns: redisConfig.MaxIdleConn,
+		PoolSize:        redisConfig.PoolSize,
+		MinIdleConns:    redisConfig.MinIdleConn,
+		MaxIdleConns:    redisConfig.MaxIdleConn,
 		ConnMaxIdleTime: time.Duration(redisConfig.ConnMaxIdleTime) * time.Minute,
 		ConnMaxLifetime: time.Duration(redisConfig.ConnMaxLifetime) * time.Minute,
 
-		DialTimeout: time.Duration(redisConfig.DialTimeout) * time.Second,
-		ReadTimeout: time.Duration(redisConfig.ReadTimeout) * time.Second,
+		DialTimeout:  time.Duration(redisConfig.DialTimeout) * time.Second,
+		ReadTimeout:  time.Duration(redisConfig.ReadTimeout) * time.Second,
 		WriteTimeout: time.Duration(redisConfig.WriteTimeout) * time.Second,
-		PoolTimeout: time.Duration(redisConfig.PoolTimeout) * time.Second,
-
+		PoolTimeout:  time.Duration(redisConfig.PoolTimeout) * time.Second,
 	})
 
 	if err := client.Ping(ctx).Err(); err != nil {
@@ -172,4 +171,3 @@ func createClientInstance(ctx context.Context, redisConfig *config.RedisConfig) 
 		rClient: client,
 	}, nil
 }
-
