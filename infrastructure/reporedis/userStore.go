@@ -68,7 +68,7 @@ func (us *UserStore) Set(ctx context.Context, user *domain.User) error {
 }
 
 func (us *UserStore) Get(ctx context.Context, id uuid.UUID) (*domain.User, error) {
-
+	// FIXME replace event
 	key := fmt.Sprintf("%s%s", UserKey, hex.EncodeToString(id[:]))
 	var user *domain.User
 	err := us.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
