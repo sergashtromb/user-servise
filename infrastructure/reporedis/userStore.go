@@ -69,7 +69,7 @@ func (us *UserStore) Set(ctx context.Context, user *domain.User) error {
 
 func (us *UserStore) Get(ctx context.Context, id uuid.UUID) (*domain.User, error) {
 
-	key := fmt.Sprintf("%s%s", UserKey, id.String())
+	key := fmt.Sprintf("%s%s", UserKey, hex.EncodeToString(id[:]))
 	var user *domain.User
 	err := us.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
@@ -206,5 +206,8 @@ func hexToUuid(strhex string) (uuid.UUID, error) {
 		return uuid.Nil(), err
 	}
 
-	return uuid.MustParse(string(b)), nil
+	var u uuid.UUID
+	copy(u[:], b)
+
+	return u, nil
 }

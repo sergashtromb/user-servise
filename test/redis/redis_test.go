@@ -36,7 +36,52 @@ func TestSetUserDataToRedis(t *testing.T) {
 	time.Sleep(3 * time.Second)
 }
 
-// TEST write test for get from redis
+func TestGetUserDataFromRedis(t *testing.T) {
+
+	userStore, err := loadAndGetUserStore()
+	if err != nil {
+		t.Errorf("failed load test err %v", err)
+	}
+
+	user := domain.User{
+		Id:        uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		UserName:  "newTestname",
+		Password:  "111",
+		Email:     "b@b.com",
+		Phone:     "+71111111111",
+		IsDeleted: false,
+	}
+
+	err = userStore.Set(context.TODO(), &user)
+
+	getingUser, err := userStore.Get(context.TODO(), uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"))
+	if err != nil {
+		t.Errorf("failed get from redis %v", err)
+	}
+
+	if user.Id != getingUser.Id {
+		t.Error("Failed test id dont equal\n")
+	}
+
+	if user.UserName != getingUser.UserName {
+		t.Error("Failed test usernamePassword dont equal\n")
+	}
+
+	if user.Email != getingUser.Email {
+		t.Error("Failed test Email dont equal\n")
+	}
+
+	if user.Phone != getingUser.Phone {
+		t.Error("Failed test Phone dont equal\n")
+	}
+
+	if user.IsDeleted != getingUser.IsDeleted {
+		t.Error("Failed test IsDeleted dont equal\n")
+	}
+
+	time.Sleep(3 * time.Second)
+
+}
 
 func loadAndGetUserStore() (*reporedis.UserStore, error) {
 	ctx := context.Background()
