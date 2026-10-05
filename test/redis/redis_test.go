@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -29,10 +30,25 @@ func TestSetUserDataToRedis(t *testing.T) {
 		IsDeleted: false,
 	}
 
+	user2 := domain.User{
+		Id:        uuid.MustParse("01a10a25-854b-7789-9602-c077421e6748"),
+		UserName:  "newTestname22",
+		Password:  "111",
+		Email:     "b@b.com",
+		Phone:     "+71111111211",
+		IsDeleted: false,
+	}
+
 	err = userStore.Set(context.TODO(), &user)
 	if err != nil {
 		t.Errorf("failed to set in redis %v\n", err)
 	}
+
+	err = userStore.Set(context.TODO(), &user2)
+	if err == nil {
+		t.Errorf("failed to set err:two index")
+	}
+
 	time.Sleep(3 * time.Second)
 }
 
@@ -80,6 +96,82 @@ func TestGetUserDataFromRedis(t *testing.T) {
 	}
 
 	time.Sleep(3 * time.Second)
+
+}
+
+func TestUpdateFuncInRedis(t *testing.T) {
+
+	userStore, err := loadAndGetUserStore()
+	if err != nil {
+		t.Errorf("Failed load test err:%v", err)
+	}
+
+	user := domain.User{
+		Id:        uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		UserName:  "newTestname",
+		Password:  "111",
+		Email:     "b@b.com",
+		Phone:     "+71111111111",
+		IsDeleted: false,
+	}
+
+	user2 := domain.User{
+		Id:        uuid.MustParse("01a0e715-e4fa-7985-9d2c-a41019053711"),
+		UserName:  "A_name",
+		Password:  "111",
+		Email:     "",
+		Phone:     "",
+		IsDeleted: false,
+	}
+
+	err = userStore.Set(context.TODO(), &user)
+	if err != nil {
+		t.Errorf("failed set user1 err:%v", err)
+	}
+
+	err = userStore.Set(context.TODO(), &user2)
+	if err != nil {
+		t.Errorf("failed set user2 err:%v", err)
+	}
+
+	tests := []string{
+		`{ "01a0e715-e4fa-7985-9d2c-a41019053711": { "username": "newTestname", "email": "b@b.com" } }`,
+		`{ "01a0e715-e4fa-7985-9d2c-a41019053711": { "username": "B_name", "phone": "+79999999999" } }`,
+		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "username": "B_name" } }`,
+		`{ "01a0e715-e4fa-7985-9d2c-a41019053711": { "email": "a@a.com" } }`,
+		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "phone": "+79999999999" } }`,
+	}
+
+	for i, jsonStr := range tests {
+
+		jsmap := make(map[string]domain.UserOpt)
+
+		err := json.Unmarshal([]byte(jsonStr), &jsmap)
+		if err != nil {
+			t.Errorf("failed parse json in user opt err:%v\n", err)
+		}
+
+		var id uuid.UUID
+		var opt domain.UserOpt
+		for k, v := range jsmap {
+			id = uuid.MustParse(k)
+			opt = v
+			break
+		}
+
+		updateErr := userStore.Update(context.TODO(), id, &opt)
+
+		switch i + 1 {
+		case 1, 3, 5:
+			if updateErr == nil {
+				t.Errorf("failed test dont err")
+			}
+		case 2, 4:
+			if updateErr != nil {
+				t.Errorf("failed test err:%v", updateErr)
+			}
+		}
+	}
 
 }
 

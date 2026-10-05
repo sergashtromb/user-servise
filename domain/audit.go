@@ -15,6 +15,8 @@ const (
 
 	EventSendUserIntoCacheFailed  EventType = "user_send_into_cache_failed"
 	EventSendUserIntoCacheSuccess EventType = "user_send_into_cache_success"
+	EventGetUserIntoCacheFailed   EventType = "user_get_into_cache_failed"
+	EventGetUserIntoCacheSuccess  EventType = "user_get_into_cache_success"
 
 	EventLoginSucces EventType = "login_succes"
 	EventLoginFailed EventType = "login_failed"
