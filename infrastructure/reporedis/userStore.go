@@ -55,23 +55,26 @@ func (us *UserStore) Set(ctx context.Context, user *dm.User) error {
 	userCache := UserCacheFromDomainUser(user)
 	err := us.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
-		err := setIndex(ctx, client, userCache.GetAllIndexs(), userCache.Id, us.ttl)
-		if err != nil {
-			errString := err.Error()
-
-			event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
-				&errString, user.Id.String())
-			us.audit.Log(ctx, event)
-			return err
-		}
-
 		data, key := userCache.ToMapInterface()
+
+		indexs, ok := userCache.GetAllIndexs()
+		if ok {
+			err := setIndex(ctx, client, indexs, userCache.Id, key, us.ttl)
+			if err != nil {
+				errString := err.Error()
+
+				event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
+					&errString, user.Id.String())
+				us.audit.Log(ctx, event)
+				return err
+			}
+		}
 
 		pipe := client.Pipeline()
 		pipe.HSet(ctx, key, data)
 		pipe.Expire(ctx, key, us.ttl)
 
-		_, err = pipe.Exec(ctx)
+		_, err := pipe.Exec(ctx)
 		if err != nil {
 			errString := err.Error()
 
@@ -153,6 +156,14 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *dm.UserO
 
 	err := us.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
+		indexManagerOpt := GetIndexManagerFromUserOpt(userOpt)
+		if indexManagerOpt.Len() == 0 {
+			event := dm.NewSuccessEvent(dm.EventSendUserIntoCacheSuccess,
+				dm.EventPlaceRedis, id.String())
+			us.audit.Log(ctx, event)
+			return nil
+		}
+
 		data, err := client.HGetAll(ctx, key).Result()
 		if err != nil {
 			strerr := err.Error()
@@ -162,18 +173,28 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *dm.UserO
 
 			return err
 		}
-		oldUc := UserCacheFromMapString(data)
-		newIndexs := GetIndexFromUserOpt(userOpt)
 
-		// FIXME check confluence if field for change and exists fields has equal field
-		// first add field
-		// second delete field
-		fieldForChange := GetFieldsForIndexFromUserOpt(userOpt)
-		existsFields := oldUc.GetIndexByFields(fieldForChange...)
-		// FIXME add double check if oldUc has equal field from user opt
-		// if true, will happen rolleback in setIndex
-		// Also add update ttl in setIndex
-		err = setIndex(ctx, client, newIndexs, hex.EncodeToString(id[:]), us.ttl)
+		oldUserCache := UserCacheFromMapString(data)
+
+		var indexForAddOrUpdate []string
+		var oldIndexForDelete []string
+		// FIXME Не удаляются поля если они прилетели на удаление
+		// FIXME не помечаются на удаление данные если прилетело поле только IsDeleted
+
+		// check up
+		fs2, _ := indexManagerOpt.GetFields()
+		i1, ok := oldUserCache.Im.GetIndexsByFields(fs2...)
+		if ok {
+			indexForAddOrUpdate, _ = indexManagerOpt.GetIndexsNotIncludedIndexs(i1...)
+			fieldsByForAddAndDelete, _ := indexManagerOpt.GetFieldsByIndexs(indexForAddOrUpdate...)
+			oldIndexForDelete, _ = oldUserCache.GetIndexByFields(fieldsByForAddAndDelete...)
+
+		} else {
+			// don't have collision
+			indexForAddOrUpdate, _ = indexManagerOpt.GetIndexs()
+		}
+
+		err = setIndex(ctx, client, indexForAddOrUpdate, hex.EncodeToString(id[:]), key, us.ttl)
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
@@ -192,7 +213,7 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *dm.UserO
 		_, err = pipe.Exec(ctx)
 		if err != nil {
 
-			if rolErr := rollbackIndex(ctx, client, newIndexs...); rolErr != nil {
+			if rolErr := rollbackIndex(ctx, client, indexForAddOrUpdate...); rolErr != nil {
 				strerr := rolErr.Error()
 				event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
 					&strerr, id.String())
@@ -209,7 +230,7 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *dm.UserO
 			return err
 		}
 
-		if rolErr := rollbackIndex(ctx, client, existsFields...); rolErr != nil {
+		if rolErr := rollbackIndex(ctx, client, oldIndexForDelete...); rolErr != nil {
 			strerr := rolErr.Error()
 			event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
 				&strerr, id.String())
@@ -227,6 +248,59 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *dm.UserO
 	return err
 }
 
+func updateIndex(ctx context.Context, audit dm.AuditService, client *redis.Client, id uuid.UUID, key string,
+	userOpt *dm.UserOpt, ttl time.Duration) ([]string, []string, error) {
+
+	indexManagerOpt := GetIndexManagerFromUserOpt(userOpt)
+	if indexManagerOpt.Len() == 0 {
+		event := dm.NewSuccessEvent(dm.EventSendUserIntoCacheSuccess,
+			dm.EventPlaceRedis, id.String())
+		audit.Log(ctx, event)
+		return nil, nil, nil
+	}
+
+	data, err := client.HGetAll(ctx, key).Result()
+	if err != nil {
+		strerr := err.Error()
+		event := dm.NewFailedEvent(dm.EventGetUserIntoCacheFailed, dm.EventPlaceRedis,
+			&strerr, id.String())
+		audit.Log(ctx, event)
+
+		return nil, nil, err
+	}
+
+	oldUserCache := UserCacheFromMapString(data)
+
+	var indexForAddOrUpdate []string
+	var oldIndexForDelete []string
+	// FIXME Не удаляются поля если они прилетели на удаление
+	// FIXME не помечаются на удаление данные если прилетело поле только IsDeleted
+
+	// check up
+	fs2, _ := indexManagerOpt.GetFields()
+	i1, ok := oldUserCache.Im.GetIndexsByFields(fs2...)
+	if ok {
+		indexForAddOrUpdate, _ = indexManagerOpt.GetIndexsNotIncludedIndexs(i1...)
+		fieldsByForAddAndDelete, _ := indexManagerOpt.GetFieldsByIndexs(indexForAddOrUpdate...)
+		oldIndexForDelete, _ = oldUserCache.GetIndexByFields(fieldsByForAddAndDelete...)
+
+	} else {
+		// don't have collision
+		indexForAddOrUpdate, _ = indexManagerOpt.GetIndexs()
+	}
+
+	err = setIndex(ctx, client, indexForAddOrUpdate, hex.EncodeToString(id[:]), key, ttl)
+	if err != nil {
+		strerr := err.Error()
+		event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
+			&strerr, id.String())
+		audit.Log(ctx, event)
+
+		return nil, nil, err
+	}
+	return indexForAddOrUpdate, oldIndexForDelete, nil
+}
+
 type UserCache struct {
 	Id        string // hex from uuid dm.User
 	UserName  string
@@ -234,57 +308,19 @@ type UserCache struct {
 	Phone     string
 	CreatedAt int64  // unix
 	IsDeleted string // "1" or "0"
+	Im        *IndexManager
 }
 
-func (uc *UserCache) GetAllIndexs() []string {
-
-	keys := make([]string, 0, 3)
-	keys = append(keys, createIndexKey(FieldUserName, uc.UserName))
-	if uc.Email != "" {
-		keys = append(keys, createIndexKey(FieldEmail, uc.Email))
-	}
-
-	if uc.Phone != "" {
-		keys = append(keys, createIndexKey(FieldPhone, uc.Phone))
-	}
-
-	return keys
+func (uc *UserCache) GetAllIndexs() ([]string, bool) {
+	return uc.Im.GetIndexs()
 }
 
-func (uc *UserCache) GetIndexByFields(fields ...string) []string {
-	keys := make([]string, 0, 3)
-
-	for _, key := range fields {
-
-		switch key {
-		case FieldUserName:
-			keys = append(keys, createIndexKey(FieldUserName, uc.UserName))
-		case FieldEmail:
-			if uc.Email != "" {
-				keys = append(keys, createIndexKey(FieldEmail, uc.Email))
-			}
-		case FieldPhone:
-			if uc.Phone != "" {
-				keys = append(keys, createIndexKey(FieldPhone, uc.Phone))
-			}
-		}
-	}
-
-	return keys
+func (uc *UserCache) GetIndexByFields(fields ...string) ([]string, bool) {
+	return uc.Im.GetIndexsByFields(fields...)
 }
 
-func (uc *UserCache) GetFieldForIndex() []string {
-	fields := make([]string, 0, 3)
-	fields = append(fields, FieldUserName)
-	if uc.Email != "" {
-		fields = append(fields, FieldEmail)
-	}
-
-	if uc.Phone != "" {
-		fields = append(fields, FieldPhone)
-	}
-
-	return fields
+func (uc *UserCache) GetFieldForIndex() ([]string, bool) {
+	return uc.Im.GetFields()
 }
 
 func (uc *UserCache) ToDomainUser() *dm.User {
@@ -317,6 +353,18 @@ func (uc *UserCache) ToMapInterface() (map[string]interface{}, string) {
 }
 
 func UserCacheFromDomainUser(user *dm.User) *UserCache {
+
+	im := NewIndexManager(IndexKey)
+	im.SetIndex(FieldUserName, user.UserName)
+
+	if user.Email != "" {
+		im.SetIndex(FieldEmail, user.Email)
+	}
+
+	if user.Phone != "" {
+		im.SetIndex(FieldPhone, user.Phone)
+	}
+
 	return &UserCache{
 		Id:        hex.EncodeToString(user.Id[:]),
 		UserName:  user.UserName,
@@ -324,6 +372,7 @@ func UserCacheFromDomainUser(user *dm.User) *UserCache {
 		Phone:     user.Phone,
 		CreatedAt: user.CreatedAt.Unix(),
 		IsDeleted: deleteStatusFromBool(user.IsDeleted),
+		Im:        im,
 	}
 }
 
@@ -334,6 +383,17 @@ func UserCacheFromMapString(data map[string]string) *UserCache {
 		createdAt = 0
 	}
 
+	im := NewIndexManager(IndexKey)
+	im.SetIndex(FieldUserName, data[FieldUserName])
+
+	if data[FieldEmail] != "" {
+		im.SetIndex(FieldEmail, data[FieldEmail])
+	}
+
+	if data[FieldPhone] != "" {
+		im.SetIndex(FieldPhone, data[FieldPhone])
+	}
+
 	return &UserCache{
 		Id:        data[FieldId],
 		UserName:  data[FieldUserName],
@@ -341,7 +401,33 @@ func UserCacheFromMapString(data map[string]string) *UserCache {
 		Phone:     data[FieldPhone],
 		CreatedAt: createdAt,
 		IsDeleted: data[FieldIsDeleted],
+		Im:        im,
 	}
+}
+
+func GetIndexManagerFromUserOpt(user *dm.UserOpt) *IndexManager {
+
+	im := NewIndexManager(IndexKey)
+
+	if user.UserName.Define {
+		if user.UserName.Valid {
+			im.SetIndex(FieldUserName, user.UserName.Value)
+		}
+	}
+
+	if user.Email.Define {
+		if user.Email.Valid {
+			im.SetIndex(FieldEmail, user.Email.Value)
+		}
+	}
+
+	if user.Phone.Define {
+		if user.Phone.Valid {
+			im.SetIndex(FieldPhone, user.Phone.Value)
+		}
+	}
+
+	return im
 }
 
 func GetIndexFromUserOpt(user *dm.UserOpt) []string {
@@ -418,16 +504,16 @@ func GetDataMapFromUserOpt(user *dm.UserOpt) map[string]interface{} {
 	return data
 }
 
-func GetIndexFromFields(fields ...string) ([]string, error) {
+func GetIndexFromFields(fieldsAndValues ...string) ([]string, error) {
 
-	if len(fields)%2 != 0 {
+	if len(fieldsAndValues)%2 != 0 {
 		return nil, errors.New("an odd number of arguments were passed")
 	}
 
 	keys := make([]string, 0)
 
-	for i := 0; i < len(fields)-1; i += 2 {
-		index := createIndexKey(fields[i], fields[i+1])
+	for i := 0; i < len(fieldsAndValues)-1; i += 2 {
+		index := createIndexKey(fieldsAndValues[i], fieldsAndValues[i+1])
 		keys = append(keys, index)
 	}
 
@@ -459,7 +545,7 @@ func hexToUuid(strhex string) (uuid.UUID, error) {
 	return u, nil
 }
 
-func setIndex(ctx context.Context, client *redis.Client, indexKeys []string, id string, ttl time.Duration) error {
+func setIndex(ctx context.Context, client *redis.Client, indexKeys []string, id, keyForUpdateTtl string, ttl time.Duration) error {
 
 	keysForRollback := make([]string, 0, 3)
 
@@ -485,6 +571,7 @@ func setIndex(ctx context.Context, client *redis.Client, indexKeys []string, id 
 		}
 
 		keysForRollback = append(keysForRollback, key)
+		client.Expire(ctx, keyForUpdateTtl, ttl)
 	}
 
 	return nil
