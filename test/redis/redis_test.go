@@ -175,6 +175,35 @@ func TestUpdateFuncInRedis(t *testing.T) {
 
 }
 
+func TestBuildUpgratePnaForUserStore(t *testing.T) {
+
+	userStore, err := loadAndGetUserStore()
+	if err != nil {
+		t.Errorf("failed load user store err%v", err)
+	}
+
+	user := domain.User{
+		Id:        uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		UserName:  "newTestname",
+		Password:  "111",
+		Email:     "b@b.com",
+		Phone:     "",
+		IsDeleted: false,
+	}
+
+	userCache := reporedis.UserCacheFromDomainUser(&user)
+
+	jsString := `{ "username": "newTestname", "phone": "+79999999999", "is_delete": true }`
+	var opt domain.UserOpt
+	if err := json.Unmarshal([]byte(jsString), &opt); err != nil {
+		t.Errorf("failed test err %v", err)
+	}
+
+	userCacheOpt := reporedis.UserCacheOptFromDomainOpt(&opt)
+
+	userStore.BuildUpgratePlan(userCache, userCacheOpt.Patches())
+}
+
 func loadAndGetUserStore() (*reporedis.UserStore, error) {
 	ctx := context.Background()
 	util.LoadEnvFile()

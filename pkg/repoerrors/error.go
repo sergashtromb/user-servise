@@ -19,6 +19,19 @@ func (re *RepoError) Error() string {
 	return fmt.Sprintf("Repo err: r:%v code:%v mes:%v\n", re.RepoName, re.Code, re.Mess)
 }
 
+func (re *RepoError) Clone() *RepoError {
+
+	newerr := *re
+
+	if re.Fields != nil {
+
+		newerr.Fields = make([]string, 0, len(re.Fields))
+		copy(newerr.Fields, re.Fields)
+	}
+
+	return &newerr
+}
+
 func NewFatalErr(repoName, mess, code string) *RepoError {
 	return &RepoError{
 		IsFatal:  true,

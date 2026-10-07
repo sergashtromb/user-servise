@@ -1,49 +1,113 @@
-package reporedis
+package index
 
 import (
 	"fmt"
 	"slices"
+	"user_service/infrastructure/reporedis/patch"
 )
 
-type IndexManager struct {
-	space  string
-	ln     int
-	indexs map[string]string
+type IndexDiff struct {
+	ToAdd    *IndexManager
+	ToDelete *IndexManager
+	ToExpire *IndexManager
 }
 
-func NewIndexManager(space string) *IndexManager {
-	return &IndexManager{
-		space:  space,
-		indexs: make(map[string]string),
+type IndexManager struct {
+	space     string
+	indexable map[string]struct{}
+	indexs    map[string]string
+}
+
+func NewIndexManager(space string, fields ...string) *IndexManager {
+
+	im := IndexManager{
+		space:     space,
+		indexable: make(map[string]struct{}),
+		indexs:    make(map[string]string),
 	}
+
+	for _, field := range fields {
+		im.indexable[field] = struct{}{}
+	}
+
+	return &im
+}
+
+func (im *IndexManager) ApplyPatch(patchs []patch.FieldPatch) *IndexManager {
+
+	res := im.clone()
+
+	for _, fieldPatch := range patchs {
+
+		if _, ok := res.indexable[fieldPatch.Name]; !ok {
+			continue
+		}
+
+		switch fieldPatch.Action {
+		case patch.FPSetField:
+			res.SetIndex(fieldPatch.Name, fieldPatch.Value)
+		case patch.FPClearField:
+			delete(res.indexs, fieldPatch.Name)
+		}
+	}
+
+	return res
+}
+
+func (im *IndexManager) Diff(old *IndexManager) *IndexDiff {
+
+	id := IndexDiff{
+		ToAdd:    NewIndexManager(im.space),
+		ToDelete: NewIndexManager(im.space),
+		ToExpire: NewIndexManager(im.space),
+	}
+
+	for key, val := range im.indexs {
+
+		data, ok := old.GetIndex(key)
+		if !ok {
+			// old hasnt field -> toAdd
+			id.ToAdd.indexs[key] = val
+		} else if val == data {
+			// old and new have common index -> toExpire
+			id.ToExpire.indexs[key] = val
+		} else {
+			// old and new have field, but indexs dotn equal -> new toAdd old toDeleted
+			id.ToAdd.indexs[key] = val
+			id.ToDelete.indexs[key] = data
+		}
+	}
+
+	// that been in old and new havnt that
+	for key, val := range old.indexs {
+		if _, ok := im.indexs[key]; !ok {
+			id.ToDelete.indexs[key] = val
+		}
+	}
+
+	return &id
 }
 
 func (im *IndexManager) SetIndex(field, val string) {
-	im.indexs[field] = fmt.Sprintf("%s%s:%s", im.space, field, val)
-	im.ln++
+	if _, ok := im.indexable[field]; ok {
+		im.indexs[field] = fmt.Sprintf("%s%s:%s", im.space, field, val)
+	}
 }
 
 func (im *IndexManager) SetIndexesByFields(val string, fields ...string) {
 	for _, field := range fields {
-		im.indexs[field] = fmt.Sprintf("%s%s:%s", im.space, field, val)
-		im.ln++
+		if _, ok := im.indexable[field]; ok {
+			im.indexs[field] = fmt.Sprintf("%s%s:%s", im.space, field, val)
+		}
 	}
 }
 
 func (im *IndexManager) DelIndex(field string) {
-	_, ok := im.indexs[field]
-	if ok {
-		im.ln--
-	}
 	delete(im.indexs, field)
 }
 
 func (im *IndexManager) DelIndexByFields(fields ...string) {
 	for _, field := range fields {
-		_, ok := im.indexs[field]
-		if ok {
-			im.ln--
-		}
 		delete(im.indexs, field)
 	}
 }
@@ -51,7 +115,6 @@ func (im *IndexManager) DelIndexByFields(fields ...string) {
 func (im *IndexManager) DelByIndex(index string) {
 	for key, val := range im.indexs {
 		if val == index {
-			im.ln--
 			delete(im.indexs, key)
 		}
 	}
@@ -180,5 +243,14 @@ func (im *IndexManager) GetFieldsByIndexs(indexs ...string) ([]string, bool) {
 }
 
 func (im *IndexManager) Len() int {
-	return im.ln
+	return len(im.indexs)
+}
+
+func (im *IndexManager) clone() *IndexManager {
+	c := NewIndexManager(im.space)
+	c.indexable = im.indexable
+	for k, v := range im.indexs {
+		c.indexs[k] = v
+	}
+	return c
 }
