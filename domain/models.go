@@ -22,3 +22,12 @@ type UserOpt struct {
 	Phone     opt.Field[string] `json:"phone"`
 	IsDeleted opt.Field[bool]   `json:"is_delete"`
 }
+
+type Session struct {
+	UserId    uuid.UUID
+	DeviceId  string
+	Ip        string
+	Agent     string
+	CreatedAt time.Time
+	ExpAt     time.Time
+}

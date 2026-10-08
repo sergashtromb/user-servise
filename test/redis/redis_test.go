@@ -204,6 +204,29 @@ func TestBuildUpgratePnaForUserStore(t *testing.T) {
 	userStore.BuildUpgratePlan(userCache, userCacheOpt.Patches())
 }
 
+// TEST run test
+func TestRegistrationSessionUser(t *testing.T) {
+
+	sessionStore, err := loadAndGetSessionStore()
+	if err != nil {
+		t.Errorf("failed load test err:%v\n", err)
+	}
+
+	session := domain.Session{
+		UserId:    uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		DeviceId:  "111",
+		Ip:        "1.2.3.4",
+		Agent:     "Chrome",
+		CreatedAt: time.Now(),
+		ExpAt:     time.Now().Add(60 * time.Minute),
+	}
+
+	err = sessionStore.Registration(context.TODO(), &session, "5555")
+	if err != nil {
+		t.Errorf("fail don't work registration %v", err)
+	}
+}
+
 func loadAndGetUserStore() (*reporedis.UserStore, error) {
 	ctx := context.Background()
 	util.LoadEnvFile()
@@ -227,4 +250,29 @@ func loadAndGetUserStore() (*reporedis.UserStore, error) {
 	us := reporedis.NewUserStore(repo, au, 60*time.Minute)
 
 	return us, nil
+}
+
+func loadAndGetSessionStore() (*reporedis.SessionStore, error) {
+	ctx := context.Background()
+	util.LoadEnvFile()
+
+	cm := config.NewConfigManager()
+
+	cm.Init(ctx, "")
+
+	repo, err := reporedis.NewRepository(ctx, cm)
+	if err != nil {
+		return nil, fmt.Errorf("Failed connect in redis %v\n", err)
+	}
+
+	db, err := postgres.NewDataBase(ctx, cm)
+	if err != nil {
+		return nil, fmt.Errorf("Failed connect to database %v\n", err)
+	}
+
+	au := postgres.NewAuditService(db, 1, 1*time.Millisecond, 5*time.Minute)
+	au.Init()
+	ss := reporedis.NewSessionStore(repo, au, 60*time.Minute)
+
+	return ss, nil
 }

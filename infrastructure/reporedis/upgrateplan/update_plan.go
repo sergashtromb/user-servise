@@ -93,6 +93,7 @@ func ReservedIndex(ctx context.Context, client *redis.Client, indexs []string, i
 				if rolerr := RollbackIndex(ctx, client, addedIndex); rolerr != nil {
 					return rolerr
 				}
+				return err
 			}
 
 			if idOwner == id {

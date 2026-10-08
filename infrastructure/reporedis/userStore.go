@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"time"
 	dm "user_service/domain"
-	"user_service/infrastructure/reporedis/custerr"
 	"user_service/infrastructure/reporedis/index"
 	"user_service/infrastructure/reporedis/patch"
 	"user_service/infrastructure/reporedis/upgrateplan"
@@ -18,18 +17,8 @@ import (
 )
 
 const (
-	UserKey  = "user:"
-	IndexKey = "user:index:"
-	RepoName = "Redis"
-)
-
-const (
-	FieldId        = "id"
-	FieldUserName  = "user_name"
-	FieldEmail     = "email"
-	FieldPhone     = "phone"
-	FieldCreatedAt = "created_at"
-	FieldIsDeleted = "is_deleted"
+	UserKey      = "user:"
+	IndexUserKey = "user:index:"
 )
 
 type UserStore struct {
@@ -114,6 +103,7 @@ func (us *UserStore) Del(ctx context.Context, key string) error {
 	return err
 }
 
+// TEST add test, where getter user was nil
 func (us *UserStore) Get(ctx context.Context, id uuid.UUID) (*dm.User, error) {
 
 	key := fmt.Sprintf("%s%s", UserKey, hex.EncodeToString(id[:]))
@@ -341,37 +331,6 @@ func UserCacheFromMapString(data map[string]string) *UserCache {
 	}
 }
 
-func GetDataMapFromUserOpt(user *dm.UserOpt) map[string]interface{} {
-
-	data := make(map[string]interface{})
-
-	if user.UserName.Define && user.UserName.Valid {
-		data[FieldUserName] = user.UserName.Value
-	}
-
-	if user.IsDeleted.Define && user.IsDeleted.Valid {
-		data[FieldIsDeleted] = user.IsDeleted.Value
-	}
-
-	if user.Email.Define {
-		if user.Email.Valid {
-			data[FieldEmail] = user.Email.Value
-		} else {
-			data[FieldEmail] = ""
-		}
-	}
-
-	if user.Phone.Define {
-		if user.Phone.Valid {
-			data[FieldPhone] = user.Phone.Value
-		} else {
-			data[FieldPhone] = ""
-		}
-	}
-
-	return data
-}
-
 func (us *UserStore) BuildUpgratePlan(old *UserCache, patchs []patch.FieldPatch) *upgrateplan.UpdatePlan {
 
 	plan := upgrateplan.UpdatePlan{}
@@ -393,7 +352,7 @@ func (us *UserStore) BuildUpgratePlan(old *UserCache, patchs []patch.FieldPatch)
 }
 
 func NewUserIndexManager() *index.IndexManager {
-	return index.NewIndexManager(IndexKey, FieldUserName, FieldEmail, FieldPhone)
+	return index.NewIndexManager(IndexUserKey, FieldUserName, FieldEmail, FieldPhone)
 }
 
 func deleteStatusFromBool(st bool) string {
@@ -421,20 +380,6 @@ func hexToUuid(strhex string) (uuid.UUID, error) {
 	return u, nil
 }
 
-func rollbackIndex(ctx context.Context, client *redis.Client, keys ...string) error {
-
-	if len(keys) == 0 {
-		return nil
-	}
-
-	err := client.Del(ctx, keys...).Err()
-	if err != nil {
-		return custerr.ErrFailedRollbackInedex.Clone()
-	}
-
-	return nil
-}
-
 func createIndexKey(field string, value string) string {
-	return fmt.Sprintf("%s%s:%s", IndexKey, field, value)
+	return fmt.Sprintf("%s%s:%s", IndexUserKey, field, value)
 }
