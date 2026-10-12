@@ -10,6 +10,7 @@ import (
 	"user_service/domain"
 	"user_service/infrastructure/postgres"
 	"user_service/infrastructure/reporedis"
+	"user_service/infrastructure/reporedis/custerr"
 	"user_service/util"
 	"uuid"
 )
@@ -204,7 +205,6 @@ func TestBuildUpgratePnaForUserStore(t *testing.T) {
 	userStore.BuildUpgratePlan(userCache, userCacheOpt.Patches())
 }
 
-// TEST run test
 func TestRegistrationSessionUser(t *testing.T) {
 
 	sessionStore, err := loadAndGetSessionStore()
@@ -225,6 +225,272 @@ func TestRegistrationSessionUser(t *testing.T) {
 	if err != nil {
 		t.Errorf("fail don't work registration %v", err)
 	}
+}
+
+func TestGetAllSessionByUserId(t *testing.T) {
+
+	sessionStore, err := loadAndGetSessionStore()
+	if err != nil {
+		t.Errorf("failed load test err:%v\n", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+
+	session := domain.Session{
+		UserId:    uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		DeviceId:  "111",
+		Ip:        "1.2.3.4",
+		Agent:     "Chrome",
+		CreatedAt: now,
+		ExpAt:     now.Add(60 * time.Minute),
+	}
+
+	session2 := domain.Session{
+		UserId:    uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		DeviceId:  "222",
+		Ip:        "1.2.3.4",
+		Agent:     "Mozzila",
+		CreatedAt: now,
+		ExpAt:     now.Add(60 * time.Minute),
+	}
+
+	err = sessionStore.Registration(context.TODO(), &session, "5555")
+	if err != nil {
+		t.Errorf("fail don't work registration %v", err)
+	}
+
+	err = sessionStore.Registration(context.TODO(), &session2, "6666")
+	if err != nil {
+		t.Errorf("fail don't work registration %v", err)
+	}
+
+	ss, err := sessionStore.GetAllSession(context.TODO(), uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"))
+	if err != nil {
+		t.Errorf("fail get all session err:%v\n", err)
+	}
+
+	if len(ss) != 2 {
+		t.Errorf("fail get all session small session")
+	}
+
+	if ss[0].UserId != session.UserId || ss[0].DeviceId != session.DeviceId ||
+		ss[0].Agent != session.Agent || ss[0].CreatedAt != session.CreatedAt ||
+		ss[0].ExpAt != session.ExpAt || ss[0].Ip != session.Ip {
+		t.Errorf("first elem dont equal")
+	}
+
+	if ss[1].UserId != session2.UserId || ss[1].DeviceId != session2.DeviceId ||
+		ss[1].Agent != session2.Agent || ss[1].CreatedAt != session2.CreatedAt ||
+		ss[1].ExpAt != session2.ExpAt || ss[1].Ip != session2.Ip {
+		t.Errorf("second elem dont equal")
+	}
+
+}
+
+func TestGetSessionByRefresh(t *testing.T) {
+
+	sessionStore, err := loadAndGetSessionStore()
+	if err != nil {
+		t.Errorf("failed load test err:%v\n", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+
+	session := domain.Session{
+		UserId:    uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		DeviceId:  "111",
+		Ip:        "1.2.3.4",
+		Agent:     "Chrome",
+		CreatedAt: now,
+		ExpAt:     now.Add(60 * time.Minute),
+	}
+
+	err = sessionStore.Registration(context.TODO(), &session, "5555")
+	if err != nil {
+		t.Errorf("fail don't work registration %v", err)
+	}
+
+	ss, err := sessionStore.GetSessionByRefresh(context.TODO(), session.UserId, "5555")
+	if err != nil {
+		t.Errorf("fail get session from redis err:%v\n", err)
+	}
+
+	if ss.UserId != session.UserId || ss.DeviceId != session.DeviceId ||
+		ss.Agent != session.Agent || ss.CreatedAt != session.CreatedAt ||
+		ss.ExpAt != session.ExpAt || ss.Ip != session.Ip {
+		t.Errorf("first elem dont equal")
+	}
+
+}
+
+func TestUpdateRefreshToken(t *testing.T) {
+
+	sessionStore, err := loadAndGetSessionStore()
+	if err != nil {
+		t.Errorf("failed load test err:%v\n", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+
+	session := domain.Session{
+		UserId:    uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		DeviceId:  "111",
+		Ip:        "1.2.3.4",
+		Agent:     "Chrome",
+		CreatedAt: now,
+		ExpAt:     now.Add(60 * time.Minute),
+	}
+
+	err = sessionStore.Registration(context.TODO(), &session, "5555")
+	if err != nil {
+		t.Errorf("fail don't work registration %v", err)
+	}
+
+	err = sessionStore.UpdateRefreshToken(context.TODO(), session.UserId, "5555", "6666")
+	if err != nil {
+		t.Errorf("fail update token err:%v\n", err)
+	}
+
+	ss, err := sessionStore.GetSessionByRefresh(context.TODO(), session.UserId, "6666")
+	if err != nil {
+		t.Errorf("fail get session from redis err:%v\n", err)
+	}
+
+	if ss.UserId != session.UserId || ss.DeviceId != session.DeviceId ||
+		ss.Agent != session.Agent || ss.CreatedAt != session.CreatedAt ||
+		ss.ExpAt != session.ExpAt || ss.Ip != session.Ip {
+		t.Errorf("update token new val dont equal old val")
+	}
+
+}
+
+func TestDeleteAllSession(t *testing.T) {
+
+	sessionStore, err := loadAndGetSessionStore()
+	if err != nil {
+		t.Errorf("failed load test err:%v\n", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+
+	session := domain.Session{
+		UserId:    uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		DeviceId:  "111",
+		Ip:        "1.2.3.4",
+		Agent:     "Chrome",
+		CreatedAt: now,
+		ExpAt:     now.Add(60 * time.Minute),
+	}
+
+	session2 := domain.Session{
+		UserId:    uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		DeviceId:  "222",
+		Ip:        "1.2.3.4",
+		Agent:     "Mozzila",
+		CreatedAt: now,
+		ExpAt:     now.Add(60 * time.Minute),
+	}
+
+	err = sessionStore.Registration(context.TODO(), &session, "5555")
+	if err != nil {
+		t.Errorf("fail don't work registration %v", err)
+	}
+
+	err = sessionStore.Registration(context.TODO(), &session2, "6666")
+	if err != nil {
+		t.Errorf("fail don't work registration %v", err)
+	}
+
+	err = sessionStore.DeleteAll(context.TODO(), session.UserId)
+	if err != nil {
+		t.Errorf("fail delete all err:%v\n", err)
+	}
+
+	_, err = sessionStore.GetSessionByRefresh(context.TODO(), session.UserId, "5555")
+	if err != custerr.ErrNotFound {
+		t.Errorf("fail store has session 1")
+	}
+
+	_, err = sessionStore.GetSessionByRefresh(context.TODO(), session2.UserId, "6666")
+	if err != custerr.ErrNotFound {
+		t.Errorf("fail store has session 2")
+	}
+
+	_, err = sessionStore.GetAllSession(context.TODO(), session2.UserId)
+	if err != custerr.ErrNotFound && err == nil {
+		t.Errorf("fail store has sessions")
+	} else if err != nil && err != custerr.ErrNotFound {
+		t.Errorf("fail error get all err:%v\n", err)
+	}
+
+}
+
+func TestDeleteSessionByRefreshToken(t *testing.T) {
+
+	sessionStore, err := loadAndGetSessionStore()
+	if err != nil {
+		t.Errorf("failed load test err:%v\n", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+
+	session := domain.Session{
+		UserId:    uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		DeviceId:  "111",
+		Ip:        "1.2.3.4",
+		Agent:     "Chrome",
+		CreatedAt: now,
+		ExpAt:     now.Add(60 * time.Minute),
+	}
+
+	session2 := domain.Session{
+		UserId:    uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		DeviceId:  "222",
+		Ip:        "1.2.3.4",
+		Agent:     "Mozzila",
+		CreatedAt: now,
+		ExpAt:     now.Add(60 * time.Minute),
+	}
+
+	err = sessionStore.Registration(context.TODO(), &session, "5555")
+	if err != nil {
+		t.Errorf("fail don't work registration %v", err)
+	}
+
+	err = sessionStore.Registration(context.TODO(), &session2, "6666")
+	if err != nil {
+		t.Errorf("fail don't work registration %v", err)
+	}
+
+	err = sessionStore.DeletByRefresh(context.TODO(), session.UserId, "5555")
+	if err != nil {
+		t.Errorf("fail delete by refresh token 5555 err:%v\n", err)
+	}
+
+	err = sessionStore.DeletByRefresh(context.TODO(), session.UserId, "6666")
+	if err != nil {
+		t.Errorf("fail delete by refresh token 6666 err:%v\n", err)
+	}
+
+	err = sessionStore.DeleteAll(context.TODO(), session.UserId)
+
+	_, err = sessionStore.GetSessionByRefresh(context.TODO(), session.UserId, "5555")
+	if err != custerr.ErrNotFound {
+		t.Errorf("fail store has session 1")
+	}
+
+	_, err = sessionStore.GetSessionByRefresh(context.TODO(), session2.UserId, "6666")
+	if err != custerr.ErrNotFound {
+		t.Errorf("fail store has session 2")
+	}
+
+	_, err = sessionStore.GetAllSession(context.TODO(), session2.UserId)
+	if err != custerr.ErrNotFound && err == nil {
+		t.Errorf("fail store has sessions")
+	} else if err != nil && err != custerr.ErrNotFound {
+		t.Errorf("fail error get all err:%v\n", err)
+	}
+
 }
 
 func loadAndGetUserStore() (*reporedis.UserStore, error) {

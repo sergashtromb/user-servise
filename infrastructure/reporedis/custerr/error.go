@@ -8,4 +8,5 @@ var (
 	ErrUserAlredyExist      = repoerrors.NewError(RepoName, "user alredy exist", "001")
 	ErrFailedRollbackInedex = repoerrors.NewFatalErr(RepoName, "failed rollback index", "002")
 	ErrSetIndexInRedis      = repoerrors.NewError(RepoName, "failed set index", "003")
+	ErrNotFound             = repoerrors.NewError(RepoName, "value not found", "004")
 )

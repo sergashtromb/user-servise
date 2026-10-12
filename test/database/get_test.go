@@ -16,15 +16,15 @@ import (
 )
 
 func TestAddTestData(t *testing.T) {
-	
+
 	pool, err := loadAndGetPool()
 	if err != nil {
 		t.Errorf("%v\n", err)
 	}
 
 	_, err = pool.Exec(context.TODO(), `INSERT INTO users (username, pass, email, phone) 
-							 VALUES ($1, $2, $3, $4);`, 
-							 "username_test", "111", "a@a.com", "+79999999999")
+							 VALUES ($1, $2, $3, $4);`,
+		"username_test", "111", "a@a.com", "+79999999999")
 	if err != nil {
 		t.Errorf("Failed make insert query %v\n", err)
 	}
@@ -37,16 +37,16 @@ func TestGetUserByID(t *testing.T) {
 		t.Errorf("%v\n", err)
 	}
 
-	origUser := domain.User {
-		Id: uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
-		UserName: "username_test",
-		Password: "111",
-		Email: "a@a.com",
-		Phone: "+79999999999",
+	origUser := domain.User{
+		Id:        uuid.MustParse("01a12e1d-4ccb-7f1d-8858-3ec4a820ee57"),
+		UserName:  "username_test",
+		Password:  "111",
+		Email:     "a@a.com",
+		Phone:     "+79999999999",
 		IsDeleted: false,
 	}
 
-	user, err := userStore.GetByID(context.TODO(), uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"))
+	user, err := userStore.GetByID(context.TODO(), uuid.MustParse("01a12e1d-4ccb-7f1d-8858-3ec4a820ee57"))
 	if err != nil {
 		t.Errorf("%v\n", err)
 	}
@@ -83,7 +83,7 @@ func TestCreateUserStore(t *testing.T) {
 		t.Errorf("%v\n", err)
 	}
 
-	newUser := domain.User {
+	newUser := domain.User{
 		UserName: "A_user",
 		Password: "222",
 	}
@@ -98,11 +98,11 @@ func TestCreateUserStore(t *testing.T) {
 		t.Error("Possible make duble")
 	}
 
-	oldUser := domain.User {
+	oldUser := domain.User{
 		UserName: "username_test",
 		Password: "111",
-		Email: "a@a.com",
-		Phone: "+79999999999",
+		Email:    "a@a.com",
+		Phone:    "+79999999999",
 	}
 
 	err = userStore.Create(context.TODO(), &oldUser)
@@ -124,11 +124,11 @@ func TestUpdateUserStore(t *testing.T) {
 	// 4 pass
 	// 5 error
 	tests := []string{
-		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "username": "newTestname", "email": "b@b.com" } }`,   
-		`{ "01a0e715-e4fa-7985-9d2c-a41019053711": { "username": "B_name", "phone": "+79999999999" } }`, 
-		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "username": "B_name" } }`,                         
-		`{ "01a0e715-e4fa-7985-9d2c-a41019053711": { "email": "a@a.com" } }`,                           
-		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "phone": "+79999999999" } }`,                   
+		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "username": "newTestname", "email": "b@b.com" } }`,
+		`{ "01a0e715-e4fa-7985-9d2c-a41019053711": { "username": "B_name", "phone": "+79999999999" } }`,
+		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "username": "B_name" } }`,
+		`{ "01a0e715-e4fa-7985-9d2c-a41019053711": { "email": "a@a.com" } }`,
+		`{ "01a0e653-37d4-78d5-aac0-0b2ccfad1963": { "phone": "+79999999999" } }`,
 	}
 
 	for i, jsonStr := range tests {
@@ -143,7 +143,7 @@ func TestUpdateUserStore(t *testing.T) {
 		for k, v := range jsonMap {
 			key = k
 			value = v
-			break 
+			break
 		}
 
 		err := userStore.Update(context.TODO(), uuid.MustParse(key), &value)
@@ -194,12 +194,12 @@ func TestGetUserByEmailUserStore(t *testing.T) {
 	existUser := "b@b.com"
 	noExistUser := "c@c.com"
 
-	existUserStruct := domain.User {
-		Id: uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
-		UserName: "newTestname",
-		Password: "111",
-		Email: "b@b.com",
-		Phone: "+71111111111",
+	existUserStruct := domain.User{
+		Id:        uuid.MustParse("01a0e653-37d4-78d5-aac0-0b2ccfad1963"),
+		UserName:  "newTestname",
+		Password:  "111",
+		Email:     "b@b.com",
+		Phone:     "+71111111111",
 		IsDeleted: false,
 	}
 
@@ -254,11 +254,11 @@ func TestBatchLogInAuditService(t *testing.T) {
 	errstr := "pass dont correst"
 	dbErr := postgres.ErrUserAlreadyExists
 
-	e1 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, true,  nil, "123")
-	e2 := domain.NewAuditEvent(domain.EventDeletedUser, domain.EventPlaceStore, true,  nil, "1583")
-	e3 := domain.NewAuditEvent(domain.EventLoginSucces, domain.EventPlaceHandler, true,  nil, "4568")
-	e4 := domain.NewAuditEvent(domain.EventLoginFailed, domain.EventPlaceHandler, false,  &errstr, "156489")
-	e5 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, false,  &dbErr, "967865")
+	e1 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, true, nil, "123")
+	e2 := domain.NewAuditEvent(domain.EventDeletedUser, domain.EventPlaceStore, true, nil, "1583")
+	e3 := domain.NewAuditEvent(domain.EventLoginSucces, domain.EventPlaceHandler, true, nil, "4568")
+	e4 := domain.NewAuditEvent(domain.EventLoginFailed, domain.EventPlaceHandler, false, &errstr, "156489")
+	e5 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, false, &dbErr, "967865")
 
 	for range 11 {
 		auditService.Log(ctx, e1)
@@ -267,8 +267,8 @@ func TestBatchLogInAuditService(t *testing.T) {
 		auditService.Log(ctx, e4)
 		auditService.Log(ctx, e5)
 	}
-	
-	time.Sleep(10*time.Second)
+
+	time.Sleep(10 * time.Second)
 }
 
 func loadAndGetUserStore() (*postgres.UserStore, error) {

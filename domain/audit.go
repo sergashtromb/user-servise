@@ -20,9 +20,12 @@ const (
 
 	EventRegistrationSessionUserSuccess EventType = "registration_user_session_success"
 	EventRegistrationSessionUserFailed  EventType = "registration_user_session_failed"
-
-	EventGetSessionUserSuccess EventType = "get_user_session_success"
-	EventGetSessionUserFailed  EventType = "get_user_session_failed"
+	EventGetSessionUserSuccess          EventType = "get_user_session_success"
+	EventGetSessionUserFailed           EventType = "get_user_session_failed"
+	EventDeleteSessionSuccess           EventType = "del_session_success"
+	EventDeleteSessionFailed            EventType = "del_session_failed"
+	EventUpdateRefreshTokenSuccess      EventType = "update_refresh_token_success"
+	EventUpdateRefreshTokenFailed       EventType = "update_refresh_token_failed"
 
 	EventLoginSucces EventType = "login_succes"
 	EventLoginFailed EventType = "login_failed"

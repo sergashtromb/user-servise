@@ -6,16 +6,19 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	dm "user_service/domain"
+	"user_service/infrastructure/reporedis/custerr"
+	"user_service/infrastructure/reporedis/scripts"
 	"uuid"
 
 	"github.com/redis/go-redis/v9"
 )
 
 const (
-	SessionKey = "session:user:"
-	RefreshKey = "session:refresh:"
+	SessionKey = "session:{%v}:user:"
+	RefreshKey = "session:{%v}:refresh:"
 )
 
 type SessionStore struct {
@@ -38,8 +41,10 @@ func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, 
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
 		hashFromRefresh := hashSumFromRefreshToken(refreshToken)
-		refreshKey := fmt.Sprintf("%s%s", RefreshKey, hashFromRefresh)
-		ssKey := fmt.Sprintf("%s%s:%s", SessionKey, localSession.UserId, hashFromRefresh)
+		hexid := hex.EncodeToString(session.UserId[:])
+
+		refreshKey := makeKey(RefreshKey, hexid, hashFromRefresh)
+		ssKey := makeKey(SessionKey, hexid, hashFromRefresh)
 
 		data := localSession.ToMap()
 
@@ -57,7 +62,7 @@ func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, 
 			return err
 		}
 
-		event := dm.NewSuccessEvent(dm.EventRegistrationSessionUserFailed, dm.EventPlaceRedis,
+		event := dm.NewSuccessEvent(dm.EventRegistrationSessionUserSuccess, dm.EventPlaceRedis,
 			session.UserId.String())
 		sst.audit.Log(ctx, event)
 
@@ -67,20 +72,19 @@ func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, 
 	return err
 }
 
-// TEST write func test
 func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([]dm.Session, error) {
 
 	hexId := hex.EncodeToString(userId[:])
-	key := fmt.Sprintf("%s%s:*", SessionKey, hexId)
+	key := makeKey(SessionKey, hexId, "*")
 
 	result := make([]dm.Session, 0)
 
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
-		refreshKeys := make([]string, 0)
+		userKeys := make([]string, 0)
 		iter := client.Scan(ctx, 0, key, 0).Iterator()
 		for iter.Next(ctx) {
-			refreshKeys = append(refreshKeys, iter.Val())
+			userKeys = append(userKeys, iter.Val())
 		}
 
 		if err := iter.Err(); err != nil {
@@ -91,25 +95,39 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 			return err
 		}
 
-		if len(refreshKeys) != 0 {
+		if len(userKeys) == 0 {
 			return nil
 		}
 
-		vals, err := client.MGet(ctx, refreshKeys...).Result()
-		if err != nil {
-			strerr := err.Error()
-			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, userId.String())
-			sst.audit.Log(ctx, event)
-			return err
+		for i := 0; i < len(userKeys); i++ {
+			userKeys[i] = strings.Trim(userKeys[i], makeKey(SessionKey, hexId, ""))
 		}
 
-		for _, val := range vals {
-			if val != nil {
-				session := SessionFromMapString(val.(map[string]string)).ToDomain()
+		data := make([]*redis.MapStringInterfaceCmd, 0)
+		pipe := client.TxPipeline()
+
+		for _, val := range userKeys {
+			elem := pipe.HGetAll(ctx, val)
+			data = append(data, elem)
+
+			data, err := client.HGetAll(ctx, val).Result()
+			if err != nil {
+				strerr := err.Error()
+				event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
+					&strerr, userId.String())
+				sst.audit.Log(ctx, event)
+				return err
+			}
+
+			if len(data) != 0 {
+				session := SessionFromMapString(data).ToDomain()
 				result = append(result, *session)
 			}
 		}
+
+		event := dm.NewSuccessEvent(dm.EventGetSessionUserSuccess, dm.EventPlaceRedis,
+			userId.String())
+		sst.audit.Log(ctx, event)
 
 		return nil
 	})
@@ -121,9 +139,12 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 	return result, nil
 }
 
-func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, refreshToken string) (*dm.Session, error) {
+func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UUID, refreshToken string) (*dm.Session, error) {
 
-	hashRefresh := fmt.Sprintf("%s%s", RefreshKey, hashSumFromRefreshToken(refreshToken))
+	hexid := hex.EncodeToString(userId[:])
+	tokenHash := hashSumFromRefreshToken(refreshToken)
+	hashRefresh := makeKey(RefreshKey, hexid, tokenHash)
+
 	var session *dm.Session
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
@@ -131,11 +152,14 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, refreshToken s
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, refreshToken)
+				&strerr, hashRefresh)
 			sst.audit.Log(ctx, event)
 			return err
 		}
 
+		if len(data) == 0 {
+			return custerr.ErrNotFound
+		}
 		session = SessionFromMapString(data).ToDomain()
 
 		// XXX ?update
@@ -149,41 +173,41 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, refreshToken s
 	return session, nil
 }
 
-func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, oldToken string, newToken string) error {
+func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, oldToken string, newToken string) error {
 
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
 		hashOld := hashSumFromRefreshToken(oldToken)
 		hashNew := hashSumFromRefreshToken(newToken)
+		hexid := hex.EncodeToString(id[:])
 
-		keyOld := fmt.Sprintf("%s%s", RefreshKey, hashOld)
-		keyNew := fmt.Sprintf("%s%s", RefreshKey, hashNew)
+		refreshOldKey := makeKey(RefreshKey, hexid, hashOld)
+		refreshNewKey := makeKey(RefreshKey, hexid, hashNew)
 
-		hexUserId, err := client.HGet(ctx, keyOld, FieldUserId).Result()
+		sessionOldKey := makeKey(SessionKey, hexid, hashOld)
+		sessionNewKey := makeKey(SessionKey, hexid, hashNew)
+
+		res, err := scripts.UpdateRefreshToken.Run(ctx, client, []string{
+			refreshOldKey,
+			sessionOldKey,
+			refreshNewKey,
+			sessionNewKey,
+		}, int(sst.ttl.Seconds()), hashNew).Int()
+
 		if err != nil {
 			strerr := err.Error()
-			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, oldToken)
+			event := dm.NewFailedEvent(dm.EventUpdateRefreshTokenFailed, dm.EventPlaceRedis,
+				&strerr, hexid)
 			sst.audit.Log(ctx, event)
 			return err
 		}
 
-		keyWithUserOld := fmt.Sprintf("%s%s:%s", SessionKey, hexUserId, hashOld)
-		keyWithUserNew := fmt.Sprintf("%s%s:%s", SessionKey, hexUserId, hashNew)
-
-		pipe := client.TxPipeline()
-
-		pipe.Rename(ctx, keyOld, keyNew)
-		pipe.Rename(ctx, keyWithUserOld, keyWithUserNew)
-		_, err = pipe.Exec(ctx)
-
-		if err != nil {
-			strerr := err.Error()
-			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, oldToken)
-			sst.audit.Log(ctx, event)
-			return err
+		if res == 0 {
+			return custerr.ErrNotFound
 		}
+
+		event := dm.NewSuccessEvent(dm.EventUpdateRefreshTokenSuccess, dm.EventPlaceRedis, hexid)
+		sst.audit.Log(ctx, event)
 
 		return nil
 	})
@@ -193,10 +217,10 @@ func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, oldToken string
 
 func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 
-	sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
+	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
 		hexId := hex.EncodeToString(id[:])
-		pattern := fmt.Sprintf("%s%s:*", SessionKey, hexId)
+		pattern := makeKey(SessionKey, hexId, "*")
 
 		keys := make([]string, 0)
 		keysFromBd := client.Scan(ctx, 0, pattern, 0).Iterator()
@@ -204,11 +228,91 @@ func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 			keys = append(keys, keysFromBd.Val())
 		}
 
-		//if err
+		if err := keysFromBd.Err(); err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
+				&strerr, id.String())
+			sst.audit.Log(ctx, event)
+			return err
+		}
+
+		if len(keys) == 0 {
+			return nil
+		}
+
+		// FIXME change code
+		// userKeys is string's slice "session:user:hex_user_id:hash_refresh_token"
+		// add trim function for del "session:user:hex_user_id:"
+		keysForDel, err := client.MGet(ctx, keys...).Result()
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
+				&strerr, id.String())
+			sst.audit.Log(ctx, event)
+			return err
+		}
+
+		if len(keysForDel) == 0 {
+			return nil
+		}
+
+		keysString := interfaceSliceToStringSlice(keysForDel)
+		if len(keysString) == 0 {
+			return nil
+		}
+
+		for i := 0; i < len(keysString); i++ {
+			keysString[i] = makeKey(RefreshKey, hexId, keysString[i])
+		}
+
+		pipe := client.TxPipeline()
+		pipe.Del(ctx, keysString...)
+		pipe.Del(ctx, keys...)
+
+		_, err = pipe.Exec(ctx)
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis,
+				&strerr, id.String())
+			sst.audit.Log(ctx, event)
+			return err
+		}
+
+		event := dm.NewSuccessEvent(dm.EventDeleteSessionSuccess, dm.EventPlaceRedis, id.String())
+		sst.audit.Log(ctx, event)
+
 		return nil
 	})
 
-	return nil
+	return err
+}
+
+func (sst *SessionStore) DeletByRefresh(ctx context.Context, id uuid.UUID, refresh string) error {
+
+	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
+
+		hexid := hex.EncodeToString(id[:])
+		hashRefresh := hashSumFromRefreshToken(refresh)
+		hkey := makeKey(RefreshKey, hexid, hashRefresh)
+		keyWithUser := makeKey(SessionKey, hexid, hashRefresh)
+
+		_, err := client.Del(ctx, keyWithUser, hkey).Result()
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis, &strerr,
+				hashRefresh)
+			sst.audit.Log(ctx, event)
+			return err
+		}
+
+		event := dm.NewSuccessEvent(dm.EventDeleteSessionSuccess, dm.EventPlaceRedis, hashRefresh)
+		sst.audit.Log(ctx, event)
+
+		return nil
+
+	})
+
+	return err
 }
 
 type Session struct {
@@ -291,4 +395,21 @@ func hashSumFromRefreshToken(token string) string {
 
 	hsh := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(hsh[:])
+}
+
+func interfaceSliceToStringSlice(input []interface{}) []string {
+
+	output := make([]string, 0, len(input))
+	for _, val := range input {
+		if val != nil {
+			output = append(output, val.(string))
+		}
+	}
+
+	return output
+}
+
+func makeKey(typeKey string, hexid string, tokenHash string) string {
+	incStr := fmt.Sprintf(typeKey, hexid)
+	return fmt.Sprintf("%v%v", incStr, tokenHash)
 }
