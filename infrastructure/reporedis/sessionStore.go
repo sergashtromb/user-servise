@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -36,6 +37,24 @@ func NewSessionStore(repo *Repository, audit dm.AuditService, ttl time.Duration)
 }
 
 func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, refreshToken string) error {
+
+	regerr := custerr.ErrBadArgs.Clone()
+	if session == nil {
+		regerr.Fields = append(regerr.Fields, "session")
+		return regerr
+	}
+
+	if session.UserId == uuid.Nil() {
+		regerr.Fields = append(regerr.Fields, FieldUserId)
+	}
+
+	if len(refreshToken) == 0 {
+		regerr.Fields = append(regerr.Fields, "refresh_token")
+	}
+
+	if len(regerr.Fields) != 0 {
+		return regerr
+	}
 
 	localSession := SessionFromDomainSession(session)
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
@@ -72,7 +91,15 @@ func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, 
 	return err
 }
 
+// one break session - is error for all
+// cache can't have break session
 func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([]dm.Session, error) {
+
+	if userId == uuid.Nil() {
+		geterr := custerr.ErrBadArgs.Clone()
+		geterr.Fields = append(geterr.Fields, FieldUserId)
+		return nil, geterr
+	}
 
 	hexId := hex.EncodeToString(userId[:])
 	key := makeKey(SessionKey, hexId, "*")
@@ -100,29 +127,70 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 		}
 
 		for i := 0; i < len(userKeys); i++ {
-			userKeys[i] = strings.Trim(userKeys[i], makeKey(SessionKey, hexId, ""))
+			trimsToken := strings.TrimPrefix(userKeys[i], makeKey(SessionKey, hexId, ""))
+			userKeys[i] = makeKey(RefreshKey, hexId, trimsToken)
 		}
 
-		data := make([]*redis.MapStringInterfaceCmd, 0)
-		pipe := client.TxPipeline()
+		data := make([]*redis.MapStringStringCmd, 0)
+		pipe := client.Pipeline()
 
 		for _, val := range userKeys {
 			elem := pipe.HGetAll(ctx, val)
 			data = append(data, elem)
+		}
 
-			data, err := client.HGetAll(ctx, val).Result()
+		_, err := pipe.Exec(ctx)
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis, &strerr,
+				hexId)
+			sst.audit.Log(ctx, event)
+			return err
+
+		}
+
+		var getErr error
+		for _, elem := range data {
+
+			val, err := elem.Result()
 			if err != nil {
 				strerr := err.Error()
 				event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-					&strerr, userId.String())
+					&strerr, hexId)
 				sst.audit.Log(ctx, event)
-				return err
+				getErr = errors.Join(getErr, err)
 			}
 
-			if len(data) != 0 {
-				session := SessionFromMapString(data).ToDomain()
+			if len(val) != 0 {
+
+				localSession, err := SessionFromMapString(val)
+				if err != nil {
+					strerr := err.Error()
+					event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
+						&strerr, hexId)
+					sst.audit.Log(ctx, event)
+					getErr = errors.Join(getErr, err)
+					getErr = errors.Join(getErr, custerr.ErrBadData)
+					continue
+				}
+
+				session, err := localSession.ToDomain()
+				if err != nil {
+					strerr := err.Error()
+					event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
+						&strerr, hexId)
+					sst.audit.Log(ctx, event)
+					getErr = errors.Join(getErr, err)
+					getErr = errors.Join(getErr, custerr.ErrBadData)
+					continue
+				}
+
 				result = append(result, *session)
 			}
+		}
+
+		if getErr != nil {
+			return getErr
 		}
 
 		event := dm.NewSuccessEvent(dm.EventGetSessionUserSuccess, dm.EventPlaceRedis,
@@ -140,6 +208,19 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 }
 
 func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UUID, refreshToken string) (*dm.Session, error) {
+
+	geterr := custerr.ErrBadArgs.Clone()
+	if userId == uuid.Nil() {
+		geterr.Fields = append(geterr.Fields, FieldUserId)
+	}
+
+	if len(refreshToken) == 0 {
+		geterr.Fields = append(geterr.Fields, "refresh_token")
+	}
+
+	if len(geterr.Fields) != 0 {
+		return nil, geterr
+	}
 
 	hexid := hex.EncodeToString(userId[:])
 	tokenHash := hashSumFromRefreshToken(refreshToken)
@@ -160,9 +241,24 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UU
 		if len(data) == 0 {
 			return custerr.ErrNotFound
 		}
-		session = SessionFromMapString(data).ToDomain()
+		localSession, err := SessionFromMapString(data)
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
+				&strerr, hashRefresh)
+			sst.audit.Log(ctx, event)
+			return custerr.ErrBadData
+		}
 
-		// XXX ?update
+		session, err = localSession.ToDomain()
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
+				&strerr, hashRefresh)
+			sst.audit.Log(ctx, event)
+			return custerr.ErrBadData
+		}
+
 		return nil
 	})
 
@@ -174,6 +270,23 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UU
 }
 
 func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, oldToken string, newToken string) error {
+
+	geterr := custerr.ErrBadArgs.Clone()
+	if id == uuid.Nil() {
+		geterr.Fields = append(geterr.Fields, FieldUserId)
+	}
+
+	if len(oldToken) == 0 {
+		geterr.Fields = append(geterr.Fields, "old_token")
+	}
+
+	if len(newToken) == 0 {
+		geterr.Fields = append(geterr.Fields, "new_token")
+	}
+
+	if len(geterr.Fields) != 0 {
+		return geterr
+	}
 
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
@@ -217,15 +330,21 @@ func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, o
 
 func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 
+	if id == uuid.Nil() {
+		geterr := custerr.ErrBadArgs.Clone()
+		geterr.Fields = append(geterr.Fields, FieldUserId)
+		return geterr
+	}
+
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
 		hexId := hex.EncodeToString(id[:])
 		pattern := makeKey(SessionKey, hexId, "*")
 
-		keys := make([]string, 0)
+		sessionKeys := make([]string, 0)
 		keysFromBd := client.Scan(ctx, 0, pattern, 0).Iterator()
 		for keysFromBd.Next(ctx) {
-			keys = append(keys, keysFromBd.Val())
+			sessionKeys = append(sessionKeys, keysFromBd.Val())
 		}
 
 		if err := keysFromBd.Err(); err != nil {
@@ -236,40 +355,21 @@ func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 			return err
 		}
 
-		if len(keys) == 0 {
+		if len(sessionKeys) == 0 {
 			return nil
 		}
 
-		// FIXME change code
-		// userKeys is string's slice "session:user:hex_user_id:hash_refresh_token"
-		// add trim function for del "session:user:hex_user_id:"
-		keysForDel, err := client.MGet(ctx, keys...).Result()
-		if err != nil {
-			strerr := err.Error()
-			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, id.String())
-			sst.audit.Log(ctx, event)
-			return err
-		}
-
-		if len(keysForDel) == 0 {
-			return nil
-		}
-
-		keysString := interfaceSliceToStringSlice(keysForDel)
-		if len(keysString) == 0 {
-			return nil
-		}
-
-		for i := 0; i < len(keysString); i++ {
-			keysString[i] = makeKey(RefreshKey, hexId, keysString[i])
+		refreshKeys := make([]string, len(sessionKeys))
+		for i := 0; i < len(sessionKeys); i++ {
+			trimsToken := strings.TrimPrefix(sessionKeys[i], makeKey(SessionKey, hexId, ""))
+			refreshKeys[i] = makeKey(RefreshKey, hexId, trimsToken)
 		}
 
 		pipe := client.TxPipeline()
-		pipe.Del(ctx, keysString...)
-		pipe.Del(ctx, keys...)
+		pipe.Del(ctx, sessionKeys...)
+		pipe.Del(ctx, refreshKeys...)
 
-		_, err = pipe.Exec(ctx)
+		_, err := pipe.Exec(ctx)
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis,
@@ -287,7 +387,20 @@ func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-func (sst *SessionStore) DeletByRefresh(ctx context.Context, id uuid.UUID, refresh string) error {
+func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, refresh string) error {
+
+	geterr := custerr.ErrBadArgs.Clone()
+	if id == uuid.Nil() {
+		geterr.Fields = append(geterr.Fields, FieldUserId)
+	}
+
+	if len(refresh) == 0 {
+		geterr.Fields = append(geterr.Fields, "refresh_token")
+	}
+
+	if len(geterr.Fields) != 0 {
+		return geterr
+	}
 
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
@@ -296,13 +409,22 @@ func (sst *SessionStore) DeletByRefresh(ctx context.Context, id uuid.UUID, refre
 		hkey := makeKey(RefreshKey, hexid, hashRefresh)
 		keyWithUser := makeKey(SessionKey, hexid, hashRefresh)
 
-		_, err := client.Del(ctx, keyWithUser, hkey).Result()
+		qnty, err := client.Del(ctx, keyWithUser, hkey).Result()
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis, &strerr,
 				hashRefresh)
 			sst.audit.Log(ctx, event)
 			return err
+		}
+		// we have a two keys: session and refresh
+		// they should be removed at the same time
+		if qnty != 2 {
+			strerr := custerr.ErrNotFound.Error()
+			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis, &strerr,
+				hashRefresh)
+			sst.audit.Log(ctx, event)
+			return custerr.ErrNotFound
 		}
 
 		event := dm.NewSuccessEvent(dm.EventDeleteSessionSuccess, dm.EventPlaceRedis, hashRefresh)
@@ -321,7 +443,6 @@ type Session struct {
 	Ip        string
 	Agent     string
 	CreatedAt int64
-	ExpAt     int64
 }
 
 func (ss *Session) ToMap() map[string]interface{} {
@@ -333,16 +454,17 @@ func (ss *Session) ToMap() map[string]interface{} {
 	data[FieldIp] = ss.Ip
 	data[FieldAgent] = ss.Agent
 	data[FieldCreatedAt] = ss.CreatedAt
-	data[FieldExpAt] = ss.ExpAt
 
 	return data
 }
 
-func (ss *Session) ToDomain() *dm.Session {
+func (ss *Session) ToDomain() (*dm.Session, error) {
 
-	expAt := time.Unix(ss.ExpAt, 0)
 	createdAt := time.Unix(ss.CreatedAt, 0)
-	id, _ := hexToUuid(ss.UserId)
+	id, err := hexToUuid(ss.UserId)
+	if err != nil {
+		return nil, err
+	}
 
 	return &dm.Session{
 		UserId:    id,
@@ -350,8 +472,7 @@ func (ss *Session) ToDomain() *dm.Session {
 		Ip:        ss.Ip,
 		Agent:     ss.Agent,
 		CreatedAt: createdAt,
-		ExpAt:     expAt,
-	}
+	}, nil
 }
 
 func SessionFromDomainSession(ss *dm.Session) *Session {
@@ -361,11 +482,10 @@ func SessionFromDomainSession(ss *dm.Session) *Session {
 		Ip:        ss.Ip,
 		Agent:     ss.Agent,
 		CreatedAt: ss.CreatedAt.Unix(),
-		ExpAt:     ss.ExpAt.Unix(),
 	}
 }
 
-func SessionFromMapString(data map[string]string) *Session {
+func SessionFromMapString(data map[string]string) (*Session, error) {
 
 	ss := Session{
 		UserId:   data[FieldUserId],
@@ -376,19 +496,12 @@ func SessionFromMapString(data map[string]string) *Session {
 
 	intCreatedAt, err := strconv.ParseInt(data[FieldCreatedAt], 10, 64)
 	if err != nil {
-		intCreatedAt = 0
+		return nil, err
 	}
 
 	ss.CreatedAt = intCreatedAt
 
-	intExpAt, err := strconv.ParseInt(data[FieldExpAt], 10, 64)
-	if err != nil {
-		intExpAt = 0
-	}
-
-	ss.ExpAt = intExpAt
-
-	return &ss
+	return &ss, nil
 }
 
 func hashSumFromRefreshToken(token string) string {
@@ -397,19 +510,7 @@ func hashSumFromRefreshToken(token string) string {
 	return hex.EncodeToString(hsh[:])
 }
 
-func interfaceSliceToStringSlice(input []interface{}) []string {
-
-	output := make([]string, 0, len(input))
-	for _, val := range input {
-		if val != nil {
-			output = append(output, val.(string))
-		}
-	}
-
-	return output
-}
-
 func makeKey(typeKey string, hexid string, tokenHash string) string {
 	incStr := fmt.Sprintf(typeKey, hexid)
-	return fmt.Sprintf("%v%v", incStr, tokenHash)
+	return fmt.Sprintf("%s%s", incStr, tokenHash)
 }

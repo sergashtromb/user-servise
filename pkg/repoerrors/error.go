@@ -1,6 +1,7 @@
 package repoerrors
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -17,6 +18,32 @@ func (re *RepoError) Error() string {
 		return fmt.Sprintf("FATAL: r:%v code:%v mes:%v\n", re.RepoName, re.Code, re.Mess)
 	}
 	return fmt.Sprintf("Repo err: r:%v code:%v mes:%v\n", re.RepoName, re.Code, re.Mess)
+}
+
+func (re *RepoError) Is(tr error) bool {
+
+	target, ok := errors.AsType[*RepoError](tr)
+	if !ok {
+		return false
+	}
+
+	if re.Code != target.Code {
+		return false
+	}
+
+	if re.Mess != target.Mess {
+		return false
+	}
+
+	if re.IsFatal != target.IsFatal {
+		return false
+	}
+
+	if re.RepoName != target.RepoName {
+		return false
+	}
+
+	return true
 }
 
 func (re *RepoError) Clone() *RepoError {

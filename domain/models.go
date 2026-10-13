@@ -29,5 +29,4 @@ type Session struct {
 	Ip        string
 	Agent     string
 	CreatedAt time.Time
-	ExpAt     time.Time
 }
