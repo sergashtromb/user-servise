@@ -6,6 +6,9 @@ import (
 	"uuid"
 )
 
+// context keys
+const TraceKey = "trace_id"
+
 type User struct {
 	Id        uuid.UUID
 	UserName  string

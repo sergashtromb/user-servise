@@ -38,6 +38,11 @@ func NewSessionStore(repo *Repository, audit dm.AuditService, ttl time.Duration)
 
 func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, refreshToken string) error {
 
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
+
 	regerr := custerr.ErrBadArgs.Clone()
 	if session == nil {
 		regerr.Fields = append(regerr.Fields, "session")
@@ -76,13 +81,13 @@ func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, 
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventRegistrationSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, session.UserId.String())
+				&strerr, session.UserId.String(), traceId)
 			sst.audit.Log(ctx, event)
 			return err
 		}
 
 		event := dm.NewSuccessEvent(dm.EventRegistrationSessionUserSuccess, dm.EventPlaceRedis,
-			session.UserId.String())
+			session.UserId.String(), traceId)
 		sst.audit.Log(ctx, event)
 
 		return nil
@@ -94,6 +99,11 @@ func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, 
 // one break session - is error for all
 // cache can't have break session
 func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([]dm.Session, error) {
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
 
 	if userId == uuid.Nil() {
 		geterr := custerr.ErrBadArgs.Clone()
@@ -117,7 +127,7 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 		if err := iter.Err(); err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, userId.String())
+				&strerr, userId.String(), traceId)
 			sst.audit.Log(ctx, event)
 			return err
 		}
@@ -143,7 +153,7 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis, &strerr,
-				hexId)
+				hexId, traceId)
 			sst.audit.Log(ctx, event)
 			return err
 
@@ -156,7 +166,7 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 			if err != nil {
 				strerr := err.Error()
 				event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-					&strerr, hexId)
+					&strerr, hexId, traceId)
 				sst.audit.Log(ctx, event)
 				getErr = errors.Join(getErr, err)
 			}
@@ -167,7 +177,7 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 				if err != nil {
 					strerr := err.Error()
 					event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-						&strerr, hexId)
+						&strerr, hexId, traceId)
 					sst.audit.Log(ctx, event)
 					getErr = errors.Join(getErr, err)
 					getErr = errors.Join(getErr, custerr.ErrBadData)
@@ -178,7 +188,7 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 				if err != nil {
 					strerr := err.Error()
 					event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-						&strerr, hexId)
+						&strerr, hexId, traceId)
 					sst.audit.Log(ctx, event)
 					getErr = errors.Join(getErr, err)
 					getErr = errors.Join(getErr, custerr.ErrBadData)
@@ -194,7 +204,7 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 		}
 
 		event := dm.NewSuccessEvent(dm.EventGetSessionUserSuccess, dm.EventPlaceRedis,
-			userId.String())
+			userId.String(), traceId)
 		sst.audit.Log(ctx, event)
 
 		return nil
@@ -208,6 +218,11 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 }
 
 func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UUID, refreshToken string) (*dm.Session, error) {
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
 
 	geterr := custerr.ErrBadArgs.Clone()
 	if userId == uuid.Nil() {
@@ -233,7 +248,7 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UU
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, hashRefresh)
+				&strerr, hashRefresh, traceId)
 			sst.audit.Log(ctx, event)
 			return err
 		}
@@ -245,7 +260,7 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UU
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, hashRefresh)
+				&strerr, hashRefresh, traceId)
 			sst.audit.Log(ctx, event)
 			return custerr.ErrBadData
 		}
@@ -254,7 +269,7 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UU
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, hashRefresh)
+				&strerr, hashRefresh, traceId)
 			sst.audit.Log(ctx, event)
 			return custerr.ErrBadData
 		}
@@ -270,6 +285,11 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UU
 }
 
 func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, oldToken string, newToken string) error {
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
 
 	geterr := custerr.ErrBadArgs.Clone()
 	if id == uuid.Nil() {
@@ -310,7 +330,7 @@ func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, o
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventUpdateRefreshTokenFailed, dm.EventPlaceRedis,
-				&strerr, hexid)
+				&strerr, hexid, traceId)
 			sst.audit.Log(ctx, event)
 			return err
 		}
@@ -319,7 +339,7 @@ func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, o
 			return custerr.ErrNotFound
 		}
 
-		event := dm.NewSuccessEvent(dm.EventUpdateRefreshTokenSuccess, dm.EventPlaceRedis, hexid)
+		event := dm.NewSuccessEvent(dm.EventUpdateRefreshTokenSuccess, dm.EventPlaceRedis, hexid, traceId)
 		sst.audit.Log(ctx, event)
 
 		return nil
@@ -329,6 +349,11 @@ func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, o
 }
 
 func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
 
 	if id == uuid.Nil() {
 		geterr := custerr.ErrBadArgs.Clone()
@@ -350,7 +375,7 @@ func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 		if err := keysFromBd.Err(); err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
-				&strerr, id.String())
+				&strerr, id.String(), traceId)
 			sst.audit.Log(ctx, event)
 			return err
 		}
@@ -373,12 +398,12 @@ func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis,
-				&strerr, id.String())
+				&strerr, id.String(), traceId)
 			sst.audit.Log(ctx, event)
 			return err
 		}
 
-		event := dm.NewSuccessEvent(dm.EventDeleteSessionSuccess, dm.EventPlaceRedis, id.String())
+		event := dm.NewSuccessEvent(dm.EventDeleteSessionSuccess, dm.EventPlaceRedis, id.String(), traceId)
 		sst.audit.Log(ctx, event)
 
 		return nil
@@ -388,6 +413,11 @@ func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 }
 
 func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, refresh string) error {
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
 
 	geterr := custerr.ErrBadArgs.Clone()
 	if id == uuid.Nil() {
@@ -413,7 +443,7 @@ func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, refr
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis, &strerr,
-				hashRefresh)
+				hashRefresh, traceId)
 			sst.audit.Log(ctx, event)
 			return err
 		}
@@ -422,12 +452,12 @@ func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, refr
 		if qnty != 2 {
 			strerr := custerr.ErrNotFound.Error()
 			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis, &strerr,
-				hashRefresh)
+				hashRefresh, traceId)
 			sst.audit.Log(ctx, event)
 			return custerr.ErrNotFound
 		}
 
-		event := dm.NewSuccessEvent(dm.EventDeleteSessionSuccess, dm.EventPlaceRedis, hashRefresh)
+		event := dm.NewSuccessEvent(dm.EventDeleteSessionSuccess, dm.EventPlaceRedis, hashRefresh, traceId)
 		sst.audit.Log(ctx, event)
 
 		return nil

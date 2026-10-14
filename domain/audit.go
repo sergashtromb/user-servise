@@ -29,15 +29,18 @@ const (
 
 	EventLoginSucces EventType = "login_succes"
 	EventLoginFailed EventType = "login_failed"
+
+	EventInboxRequest EventType = "inbox_request"
 )
 
 type EventPlace string
 
 const (
-	EventPlaceStore   EventPlace = "STORE"
-	EventPlaceHandler EventPlace = "HANDLER"
-	EventPlaceSystem  EventPlace = "SYSTEM"
-	EventPlaceRedis   EventPlace = "REDIS"
+	EventPlaceStore      EventPlace = "STORE"
+	EventPlaceHandler    EventPlace = "HANDLER"
+	EventPlaceMiddleware EventPlace = "MIDDLEWARE"
+	EventPlaceSystem     EventPlace = "SYSTEM"
+	EventPlaceRedis      EventPlace = "REDIS"
 )
 
 type AuditEvent struct {
@@ -48,6 +51,7 @@ type AuditEvent struct {
 	Error     *string
 	EntityId  string
 	Timestamp time.Time
+	TraceId   string
 
 	// for store
 	OldData any
@@ -60,7 +64,7 @@ type AuditService interface {
 	Log(ctx context.Context, event *AuditEvent) error
 }
 
-func NewAuditEvent(tp EventType, place EventPlace, succ bool, err *string, entId string) *AuditEvent {
+func NewAuditEvent(tp EventType, place EventPlace, succ bool, err *string, entId string, traceId string) *AuditEvent {
 	return &AuditEvent{
 		Type:      tp,
 		Place:     place,
@@ -71,10 +75,10 @@ func NewAuditEvent(tp EventType, place EventPlace, succ bool, err *string, entId
 	}
 }
 
-func NewSuccessEvent(tp EventType, place EventPlace, entId string) *AuditEvent {
-	return NewAuditEvent(tp, place, true, nil, entId)
+func NewSuccessEvent(tp EventType, place EventPlace, entId string, traceId string) *AuditEvent {
+	return NewAuditEvent(tp, place, true, nil, entId, traceId)
 }
 
-func NewFailedEvent(tp EventType, place EventPlace, err *string, entId string) *AuditEvent {
-	return NewAuditEvent(tp, place, false, err, entId)
+func NewFailedEvent(tp EventType, place EventPlace, err *string, entId string, traceId string) *AuditEvent {
+	return NewAuditEvent(tp, place, false, err, entId, traceId)
 }

@@ -254,11 +254,11 @@ func TestBatchLogInAuditService(t *testing.T) {
 	errstr := "pass dont correst"
 	dbErr := postgres.ErrUserAlreadyExists
 
-	e1 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, true, nil, "123")
-	e2 := domain.NewAuditEvent(domain.EventDeletedUser, domain.EventPlaceStore, true, nil, "1583")
-	e3 := domain.NewAuditEvent(domain.EventLoginSucces, domain.EventPlaceHandler, true, nil, "4568")
-	e4 := domain.NewAuditEvent(domain.EventLoginFailed, domain.EventPlaceHandler, false, &errstr, "156489")
-	e5 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, false, &dbErr, "967865")
+	e1 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, true, nil, "123", "")
+	e2 := domain.NewAuditEvent(domain.EventDeletedUser, domain.EventPlaceStore, true, nil, "1583", "")
+	e3 := domain.NewAuditEvent(domain.EventLoginSucces, domain.EventPlaceHandler, true, nil, "4568", "")
+	e4 := domain.NewAuditEvent(domain.EventLoginFailed, domain.EventPlaceHandler, false, &errstr, "156489", "")
+	e5 := domain.NewAuditEvent(domain.EventCreatedUser, domain.EventPlaceHandler, false, &dbErr, "967865", "")
 
 	for range 11 {
 		auditService.Log(ctx, e1)

@@ -38,6 +38,12 @@ func NewUserStore(repo *Repository, audit dm.AuditService, ttl time.Duration) *U
 func (us *UserStore) Set(ctx context.Context, user *dm.User) error {
 
 	userCache := UserCacheFromDomainUser(user)
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
+
 	err := us.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
 		data, key := userCache.ToMapInterface()
@@ -50,7 +56,7 @@ func (us *UserStore) Set(ctx context.Context, user *dm.User) error {
 				errString := err.Error()
 
 				event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
-					&errString, user.Id.String())
+					&errString, user.Id.String(), traceId)
 				us.audit.Log(ctx, event)
 				return err
 			}
@@ -73,7 +79,7 @@ func (us *UserStore) Set(ctx context.Context, user *dm.User) error {
 				errString := err.Error()
 
 				event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
-					&errString, user.Id.String())
+					&errString, user.Id.String(), traceId)
 				us.audit.Log(ctx, event)
 				return err
 			}
@@ -81,13 +87,13 @@ func (us *UserStore) Set(ctx context.Context, user *dm.User) error {
 			errString := err.Error()
 
 			event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
-				&errString, user.Id.String())
+				&errString, user.Id.String(), traceId)
 			us.audit.Log(ctx, event)
 			return err
 		}
 
 		event := dm.NewSuccessEvent(dm.EventSendUserIntoCacheSuccess, dm.EventPlaceRedis,
-			user.Id.String())
+			user.Id.String(), traceId)
 		us.audit.Log(ctx, event)
 
 		return nil
@@ -106,6 +112,11 @@ func (us *UserStore) Del(ctx context.Context, key string) error {
 // TEST add test, where getter user was nil
 func (us *UserStore) Get(ctx context.Context, id uuid.UUID) (*dm.User, error) {
 
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
+
 	key := fmt.Sprintf("%s%s", UserKey, hex.EncodeToString(id[:]))
 	var user *dm.User
 	err := us.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
@@ -120,7 +131,7 @@ func (us *UserStore) Get(ctx context.Context, id uuid.UUID) (*dm.User, error) {
 			errString := err.Error()
 
 			event := dm.NewFailedEvent(dm.EventGetUserIntoCacheFailed, dm.EventPlaceRedis,
-				&errString, id.String())
+				&errString, id.String(), traceId)
 			us.audit.Log(ctx, event)
 
 			return err
@@ -131,7 +142,7 @@ func (us *UserStore) Get(ctx context.Context, id uuid.UUID) (*dm.User, error) {
 			errString := err.Error()
 
 			event := dm.NewFailedEvent(dm.EventGetUserIntoCacheFailed, dm.EventPlaceRedis,
-				&errString, id.String())
+				&errString, id.String(), traceId)
 			us.audit.Log(ctx, event)
 
 			return err
@@ -140,7 +151,7 @@ func (us *UserStore) Get(ctx context.Context, id uuid.UUID) (*dm.User, error) {
 		user = UserCacheFromMapString(data).ToDomainUser()
 
 		sucEvent := dm.NewSuccessEvent(dm.EventGetUserIntoCacheSuccess, dm.EventPlaceRedis,
-			user.Id.String())
+			user.Id.String(), traceId)
 		us.audit.Log(ctx, sucEvent)
 
 		return nil
@@ -155,6 +166,11 @@ func (us *UserStore) Get(ctx context.Context, id uuid.UUID) (*dm.User, error) {
 
 func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *dm.UserOpt) error {
 
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
+
 	hexid := hex.EncodeToString(id[:])
 	key := fmt.Sprintf("%s%s", UserKey, hexid)
 
@@ -166,7 +182,7 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *dm.UserO
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventGetUserIntoCacheFailed, dm.EventPlaceRedis,
-				&strerr, id.String())
+				&strerr, id.String(), traceId)
 			us.audit.Log(ctx, event)
 
 			return err
@@ -177,12 +193,12 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *dm.UserO
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventSendUserIntoCacheFailed, dm.EventPlaceRedis,
-				&strerr, id.String())
+				&strerr, id.String(), traceId)
 			us.audit.Log(ctx, event)
 			return err
 		}
 
-		event := dm.NewSuccessEvent(dm.EventSendUserIntoCacheSuccess, dm.EventPlaceRedis, id.String())
+		event := dm.NewSuccessEvent(dm.EventSendUserIntoCacheSuccess, dm.EventPlaceRedis, id.String(), traceId)
 		us.audit.Log(ctx, event)
 
 		return nil
