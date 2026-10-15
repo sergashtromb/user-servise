@@ -30,7 +30,8 @@ const (
 	EventLoginSucces EventType = "login_succes"
 	EventLoginFailed EventType = "login_failed"
 
-	EventInboxRequest EventType = "inbox_request"
+	EventInboxRequestStart EventType = "inbox_request_start"
+	EventInboxRequestEnd   EventType = "inbox_request_end"
 )
 
 type EventPlace string
@@ -72,6 +73,7 @@ func NewAuditEvent(tp EventType, place EventPlace, succ bool, err *string, entId
 		Error:     err,
 		EntityId:  entId,
 		Timestamp: time.Now(),
+		TraceId:   traceId,
 	}
 }
 

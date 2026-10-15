@@ -9,17 +9,37 @@ import (
 	"uuid"
 )
 
-type Middleware struct {
+type ShellResponseWrite struct {
+	http.ResponseWriter
+	status   int
+	bodySize int
+}
+
+func (sr *ShellResponseWrite) WriteHeader(statusCode int) {
+	sr.status = statusCode
+	sr.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (sr *ShellResponseWrite) Write(b []byte) (int, error) {
+	sr.bodySize = len(b)
+	return sr.ResponseWriter.Write(b)
+}
+
+func (sr *ShellResponseWrite) Header() http.Header {
+	return sr.ResponseWriter.Header()
+}
+
+type UtilMiddleware struct {
 	audit domain.AuditService
 }
 
-func NewMiddleware(audit domain.AuditService) *Middleware {
-	return &Middleware{
+func NewMiddleware(audit domain.AuditService) *UtilMiddleware {
+	return &UtilMiddleware{
 		audit: audit,
 	}
 }
 
-func (md *Middleware) PanicRecovery(next http.Handler) http.Handler {
+func (md *UtilMiddleware) PanicRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		defer func() {
@@ -34,10 +54,10 @@ func (md *Middleware) PanicRecovery(next http.Handler) http.Handler {
 	})
 }
 
-func (md *Middleware) TraceControl(next http.Handler) http.Handler {
+func (md *UtilMiddleware) TraceControl(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-		reqid := r.Header.Get("X-Request-ID")
+		reqid := r.Header.Get("X-Request-Id")
 		var traceId string
 
 		if reqid == "" {
@@ -52,7 +72,7 @@ func (md *Middleware) TraceControl(next http.Handler) http.Handler {
 	})
 }
 
-func (md *Middleware) Logger(next http.Handler) http.Handler {
+func (md *UtilMiddleware) Logger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		data := make(map[string]string)
@@ -71,11 +91,31 @@ func (md *Middleware) Logger(next http.Handler) http.Handler {
 			traceId = ""
 		}
 
-		event := domain.NewAuditEvent(domain.EventInboxRequest, domain.EventPlaceMiddleware,
+		event := domain.NewAuditEvent(domain.EventInboxRequestStart, domain.EventPlaceMiddleware,
 			true, nil, "", traceId)
-		// FIXME change context
-		md.audit.Log(context.TODO(), event)
+		md.audit.Log(r.Context(), event)
 
+		shellWriter := ShellResponseWrite{
+			ResponseWriter: w,
+			status:         0,
+			bodySize:       0,
+		}
+
+		w = &shellWriter
 		next.ServeHTTP(w, r)
+
+		event = domain.NewAuditEvent(domain.EventInboxRequestEnd, domain.EventPlaceMiddleware,
+			true, nil, "", traceId)
+		event.Metadata = make(map[string]any)
+		event.Metadata["ContentLenght"] = strconv.Itoa(shellWriter.bodySize)
+		event.Metadata["StatusCode"] = strconv.Itoa(shellWriter.status)
+		md.audit.Log(r.Context(), event)
+
+	})
+}
+
+func (md *UtilMiddleware) RateLimiterForIp(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
 	})
 }
