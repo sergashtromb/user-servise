@@ -4,6 +4,18 @@ import (
 	"context"
 )
 
+type MockEmptyAuditService struct{}
+
+func (meau *MockEmptyAuditService) Log(ctx context.Context, event *AuditEvent) error {
+	return nil
+}
+
+func GetMockEmptyAuditService() AuditService {
+	mock := MockEmptyAuditService{}
+	au := &mock
+	return au
+}
+
 type MockAuditService struct {
 	TableResult map[string][]AuditEvent
 }

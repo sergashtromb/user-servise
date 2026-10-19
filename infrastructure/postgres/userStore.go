@@ -11,6 +11,7 @@ import (
 	"github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5"
 )
+
 // TODO add audit service
 type UserStore struct {
 	db *DataBase
@@ -42,12 +43,13 @@ func (us *UserStore) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, e
 
 	return &user, nil
 }
+
 // TODO add custom error when fields empty
 func (us *UserStore) Create(ctx context.Context, user *domain.User) error {
 
 	pool := us.db.GetPool()
 
-	_, err := pool.Exec(ctx, 
+	_, err := pool.Exec(ctx,
 		`INSERT INTO users (username, pass, email, phone)
 		VALUES ($1, $2, $3, $4);`, &user.UserName, &user.Password, &user.Email, &user.Phone)
 
@@ -66,8 +68,8 @@ func (us *UserStore) Create(ctx context.Context, user *domain.User) error {
 func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.UserOpt) error {
 
 	psql := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar)
-	qr := psql.Update("users").Where(squirrel.Eq{"id": id.String(),})
-	
+	qr := psql.Update("users").Where(squirrel.Eq{"id": id.String()})
+
 	if userOpt.UserName.Define {
 		if !userOpt.UserName.Valid {
 			return NewDbError(ErrFieldCantBeEmpty, CodeDbErrFieldCantBeEmpty, []string{"username"})
@@ -94,8 +96,8 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.U
 
 	if userOpt.IsDeleted.Define {
 		if !userOpt.IsDeleted.Valid {
-			return NewDbError(ErrFieldCantBeEmpty, CodeDbErrFieldCantBeEmpty, []string{"is_deleted"})	
-		} 
+			return NewDbError(ErrFieldCantBeEmpty, CodeDbErrFieldCantBeEmpty, []string{"is_deleted"})
+		}
 
 		qr = qr.Set("is_deleted", userOpt.IsDeleted.Value)
 	}
@@ -134,13 +136,14 @@ func (us *UserStore) Delete(ctx context.Context, id uuid.UUID) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NewDbError(ErrUserDontExist, CodeDbErrUserDontExist, make([]string, 0))
 	}
-	
+
 	if err != nil {
 		return err
 	}
 
 	return nil
 }
+
 // TODO write universal get method with domain.UserOpt
 func (us *UserStore) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
 
@@ -148,13 +151,13 @@ func (us *UserStore) GetByEmail(ctx context.Context, email string) (*domain.User
 	pool := us.db.GetPool()
 
 	var user domain.User
-	err := pool.QueryRow(ctx, 
+	err := pool.QueryRow(ctx,
 		`SELECT
 			id, username, pass, email, phone, is_deleted, created_at
 		FROM users
 		WHERE
 			email = $1 AND is_deleted = false`, &trEmail).Scan(
-				&user.Id, &user.UserName, &user.Password, &user.Email, &user.Phone, &user.IsDeleted, &user.CreatedAt)
+		&user.Id, &user.UserName, &user.Password, &user.Email, &user.Phone, &user.IsDeleted, &user.CreatedAt)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -173,13 +176,13 @@ func (us *UserStore) GetByPhone(ctx context.Context, phone string) (*domain.User
 	pool := us.db.GetPool()
 
 	var user domain.User
-	err := pool.QueryRow(ctx, 
+	err := pool.QueryRow(ctx,
 		`SELECT
 			id, username, pass, email, phone, is_deleted, created_at
 		FROM users
 		WHERE
 			phone = $1 AND is_deleted = false`, &trPhone).Scan(
-				&user.Id, &user.UserName, &user.Password, &user.Email, &user.Phone, &user.IsDeleted, &user.CreatedAt)
+		&user.Id, &user.UserName, &user.Password, &user.Email, &user.Phone, &user.IsDeleted, &user.CreatedAt)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

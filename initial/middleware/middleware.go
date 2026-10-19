@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"user_service/domain"
+	"user_service/initial/limiter"
 	"uuid"
 )
 
@@ -30,12 +31,14 @@ func (sr *ShellResponseWrite) Header() http.Header {
 }
 
 type UtilMiddleware struct {
-	audit domain.AuditService
+	audit   domain.AuditService
+	limiter limiter.ShardRateLimiter
 }
 
-func NewMiddleware(audit domain.AuditService) *UtilMiddleware {
+func NewMiddleware(audit domain.AuditService, sl limiter.ShardRateLimiter) *UtilMiddleware {
 	return &UtilMiddleware{
-		audit: audit,
+		audit:   audit,
+		limiter: sl,
 	}
 }
 
@@ -116,6 +119,13 @@ func (md *UtilMiddleware) Logger(next http.Handler) http.Handler {
 
 func (md *UtilMiddleware) RateLimiterForIp(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		addr := r.RemoteAddr
+		if md.limiter.Allow(addr) {
+			next.ServeHTTP(w, r)
+		} else {
+			http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+		}
 
 	})
 }

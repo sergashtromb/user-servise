@@ -2,7 +2,9 @@ package config
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"sync"
@@ -16,49 +18,57 @@ import (
 )
 
 type ConfigManager struct {
-	rm 			sync.RWMutex
-	currSet 	*os.File
-	cnf 		atomic.Pointer[Config] 
-	kn 			*koanf.Koanf
-	listener 	map[string][]func(ctx context.Context, option any)
+	rm       sync.RWMutex
+	currSet  *os.File
+	cnf      atomic.Pointer[Config]
+	kn       *koanf.Koanf
+	listener map[string][]func(ctx context.Context, option any)
 }
 
 type Config struct {
-	Port 			int 			`yaml:"port" env:"PORT" koanf:"port" hot:"false"`
-	LogLevel 		string 			`yaml:"log_level" env:"LOG_LEVEL" koanf:"log.level" hot:"true"`
-	DataBaseConf 	DataBaseConfig 	`yaml:"data_base_config" envPrefix:"DB_"`
-	RedisConf 		RedisConfig 	`yaml:"redis_config" envPrefix:"RD_"`
+	Port         int            `yaml:"port" env:"PORT" koanf:"port" hot:"false"`
+	LogLevel     string         `yaml:"log_level" env:"LOG_LEVEL" koanf:"log.level" hot:"true"`
+	DataBaseConf DataBaseConfig `yaml:"data_base_config" envPrefix:"DB_"`
+	RedisConf    RedisConfig    `yaml:"redis_config" envPrefix:"RD_"`
+	TokenConf    TokensConfig   `envPrefix:"TK_"`
 }
 
 type DataBaseConfig struct {
-	User 		string 	`yaml:"user" env:"USER" koanf:"data_base_config.user" hot:"false"`
-	Password 	string 	`yaml:"password" env:"PASS" koanf:"data_base_config.pass" hot:"false"`
-	DataBase 	string 	`yaml:"name" env:"NAME" koanf:"data_base_config.name" hot:"false"`
-	Host 		string 	`yaml:"host" env:"HOST" koanf:"data_base_config.host" hot:"false"`
-	Port 		string 	`yaml:"port" env:"PORT" koanf:"data_base_config.port" hot:"false"`
-	MaxConn 	int 	`yaml:"max_conn" env:"MAX_CONN" koanf:"data_base_config.max_conn" hot:"true"`
-	MinConn 	int 	`yaml:"min_conn" env:"MIN_CONN" koanf:"data_base_config.min_conn" hot:"true"`
+	User     string `yaml:"user" env:"USER" koanf:"data_base_config.user" hot:"false"`
+	Password string `yaml:"password" env:"PASS" koanf:"data_base_config.pass" hot:"false"`
+	DataBase string `yaml:"name" env:"NAME" koanf:"data_base_config.name" hot:"false"`
+	Host     string `yaml:"host" env:"HOST" koanf:"data_base_config.host" hot:"false"`
+	Port     string `yaml:"port" env:"PORT" koanf:"data_base_config.port" hot:"false"`
+	MaxConn  int    `yaml:"max_conn" env:"MAX_CONN" koanf:"data_base_config.max_conn" hot:"true"`
+	MinConn  int    `yaml:"min_conn" env:"MIN_CONN" koanf:"data_base_config.min_conn" hot:"true"`
 }
 
 type RedisConfig struct {
-	Port 			string `yaml:"port" env:"PORT" koanf:"redis_config.port" hot:"false"`
-	Host 			string `yaml:"host" env:"HOST" koanf:"redis_config.host" hot:"false"`
-	Password 		string `yaml:"pass" env:"PASS" koanf:"redis_config.pass" hot:"false"`
-	DbNum 			int    `yaml:"db" env:"DB_NUM" koanf:"redis_config.db" hot:"false"`
-	PoolSize 		int    `yaml:"poolsize" env:"POOLSIZE" koanf:"redis_config.poolsize" hot:"false"`
-	MinIdleConn 	int    `yaml:"min_idle_conn" env:"MIN_IDLE_CONN" koanf:"redis_config.min_idle_conn" hot:"true"`
-	MaxIdleConn 	int    `yaml:"max_idle_conn" env:"MAX_IDLE_CONN" koanf:"redis_config.max_idle_conn" hot:"true"`
+	Port            string `yaml:"port" env:"PORT" koanf:"redis_config.port" hot:"false"`
+	Host            string `yaml:"host" env:"HOST" koanf:"redis_config.host" hot:"false"`
+	Password        string `yaml:"pass" env:"PASS" koanf:"redis_config.pass" hot:"false"`
+	DbNum           int    `yaml:"db" env:"DB_NUM" koanf:"redis_config.db" hot:"false"`
+	PoolSize        int    `yaml:"poolsize" env:"POOLSIZE" koanf:"redis_config.poolsize" hot:"false"`
+	MinIdleConn     int    `yaml:"min_idle_conn" env:"MIN_IDLE_CONN" koanf:"redis_config.min_idle_conn" hot:"true"`
+	MaxIdleConn     int    `yaml:"max_idle_conn" env:"MAX_IDLE_CONN" koanf:"redis_config.max_idle_conn" hot:"true"`
 	ConnMaxIdleTime int    `yaml:"conn_max_idle_time" env:"CONN_MAX_IDLE_TIME_MN" koanf:"redis_config.conn_max_idle_time" hot:"true"`
 	ConnMaxLifetime int    `yaml:"conn_max_lifetime" env:"CONN_MAX_LIFETIME_MN" koanf:"redis_config.conn_max_lifetime" hot:"true"`
-	DialTimeout 	int    `yaml:"dial_timeout" env:"DIAL_TIMEOUT_SC" koanf:"redis_config.dial_timeout" hot:"true"`
-	ReadTimeout 	int    `yaml:"read_timeout" env:"READ_TIMEOUT_SC" koanf:"redis_config.read_timeout" hot:"true"`
-	WriteTimeout 	int    `yaml:"write_timeout" env:"WRITE_TIMEOUT_SC" koanf:"redis_config.write_timeout" hot:"true"`
-	PoolTimeout 	int    `yaml:"pool_timeout" env:"POOL_TIMEOUT_SC" koanf:"redis_config.pool_timeout" hot:"true"`
+	DialTimeout     int    `yaml:"dial_timeout" env:"DIAL_TIMEOUT_SC" koanf:"redis_config.dial_timeout" hot:"true"`
+	ReadTimeout     int    `yaml:"read_timeout" env:"READ_TIMEOUT_SC" koanf:"redis_config.read_timeout" hot:"true"`
+	WriteTimeout    int    `yaml:"write_timeout" env:"WRITE_TIMEOUT_SC" koanf:"redis_config.write_timeout" hot:"true"`
+	PoolTimeout     int    `yaml:"pool_timeout" env:"POOL_TIMEOUT_SC" koanf:"redis_config.pool_timeout" hot:"true"`
+}
+
+type TokensConfig struct {
+	Access    string `env:"ACCESS"`
+	Refresh   string `env:"REFRESH"`
+	AccessBt  []byte
+	RefreshBt []byte
 }
 
 func NewConfigManager() *ConfigManager {
 	return &ConfigManager{
-		kn: koanf.New("."),
+		kn:       koanf.New("."),
 		listener: make(map[string][]func(ctx context.Context, option any)),
 	}
 }
@@ -67,7 +77,7 @@ func (cm *ConfigManager) Init(ctx context.Context, configFile string) {
 
 	cnf := setDefault()
 	hasConfFile := false
-	
+
 	f := file.Provider(configFile)
 
 	if err := cm.kn.Load(f, yaml.Parser()); err != nil {
@@ -77,13 +87,13 @@ func (cm *ConfigManager) Init(ctx context.Context, configFile string) {
 	}
 
 	if hasConfFile {
-		f.Watch(func(event interface{}, err error){
+		f.Watch(func(event interface{}, err error) {
 
 			if err != nil {
 				slog.Error("Watch config file error", "err", err)
 				return
 			}
-			
+
 			cm.kn = koanf.New(".")
 			if err := cm.kn.Load(f, yaml.Parser()); err != nil {
 				slog.Error("Error load config file", "err", err)
@@ -93,10 +103,26 @@ func (cm *ConfigManager) Init(ctx context.Context, configFile string) {
 			cm.mergeChangesFromFile(ctx)
 		})
 	}
-	
+
 	if err := env.Parse(cnf); err != nil {
 		slog.Error("Error parse env", "err", err)
 	}
+
+	accessBt, err := base64.StdEncoding.DecodeString(cnf.TokenConf.Access)
+	if err != nil {
+		slog.Error("Failed parse access secret key", "err", err)
+		log.Fatalf("Failed parse access secret key err:%v", err)
+	}
+
+	cnf.TokenConf.AccessBt = accessBt
+
+	refreshBt, err := base64.StdEncoding.DecodeString(cnf.TokenConf.Refresh)
+	if err != nil {
+		slog.Error("Failed parse refresh secret key", "err", err)
+		log.Fatalf("Failed parse refresh secret key err:%v", err)
+	}
+
+	cnf.TokenConf.RefreshBt = refreshBt
 
 	cm.cnf.Store(cnf)
 }
@@ -113,7 +139,7 @@ func (cm *ConfigManager) Update(ctx context.Context, newCnf *Config) {
 		cm.notify("log.level", ctx, newCnf.LogLevel)
 	}
 
-	if oldCnf.DataBaseConf.MaxConn != newCnf.DataBaseConf.MaxConn || 
+	if oldCnf.DataBaseConf.MaxConn != newCnf.DataBaseConf.MaxConn ||
 		oldCnf.DataBaseConf.MinConn != newCnf.DataBaseConf.MinConn {
 		cm.notify("data_base_config", ctx, newCnf.DataBaseConf)
 	}
@@ -165,31 +191,31 @@ func (dbc *DataBaseConfig) ToString() string {
 
 func setDefault() *Config {
 	return &Config{
-		Port: 8080,
+		Port:     8080,
 		LogLevel: "info",
-		DataBaseConf: DataBaseConfig {
-			User: "",
+		DataBaseConf: DataBaseConfig{
+			User:     "",
 			Password: "",
 			DataBase: "",
-			Host: "",
-			Port: "",
-			MaxConn: 15,
-			MinConn: 3,
+			Host:     "",
+			Port:     "",
+			MaxConn:  15,
+			MinConn:  3,
 		},
-		RedisConf: RedisConfig {
-			Port: "",
-			Host: "",
-			Password: "",
-			DbNum: 0,
-			PoolSize: 20,
-			MinIdleConn: 3,
-			MaxIdleConn: 8,
+		RedisConf: RedisConfig{
+			Port:            "",
+			Host:            "",
+			Password:        "",
+			DbNum:           0,
+			PoolSize:        20,
+			MinIdleConn:     3,
+			MaxIdleConn:     8,
 			ConnMaxIdleTime: 2,
 			ConnMaxLifetime: 10,
-			DialTimeout: 5,
-			ReadTimeout: 3,
-			WriteTimeout: 3,
-			PoolTimeout: 5,
+			DialTimeout:     5,
+			ReadTimeout:     3,
+			WriteTimeout:    3,
+			PoolTimeout:     5,
 		},
 	}
 }

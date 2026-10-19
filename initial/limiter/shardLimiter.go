@@ -9,13 +9,60 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// TODO add shell for rate.Limiter
-// add field lastUse - time.Time
-// add method for check how much time limiter unsual
+type ShardRateLimiter interface {
+	Allow(ip string) bool
+}
+
+type ShellLimiter struct {
+	rate.Limiter
+	mu      sync.Mutex
+	lastUse time.Time
+}
+
+func NewShellLimiter(spf float64, cap int) *ShellLimiter {
+	return &ShellLimiter{
+		Limiter: *rate.NewLimiter(rate.Limit(spf), cap),
+		lastUse: time.Now(),
+	}
+}
+
+func (sl *ShellLimiter) Allow() bool {
+	sl.mu.Lock()
+	sl.lastUse = time.Now()
+	sl.mu.Unlock()
+
+	return sl.Limiter.Allow()
+}
+
+func (sl *ShellLimiter) IsUsed(start time.Time) bool {
+	return sl.lastUse.After(start)
+}
 
 type Shard struct {
 	rm   sync.RWMutex
-	data map[string]*rate.Limiter
+	data map[string]*ShellLimiter
+}
+
+func (sh *Shard) DelLimiter(ip string) {
+	sh.rm.Lock()
+	defer sh.rm.Unlock()
+
+	delete(sh.data, ip)
+}
+
+func (sh *Shard) DelIfUnuse(ip string, timeUnuse time.Time) {
+
+	sh.rm.Lock()
+	defer sh.rm.Unlock()
+
+	lim, ok := sh.data[ip]
+	if !ok {
+		return
+	}
+
+	if !lim.IsUsed(timeUnuse) {
+		delete(sh.data, ip)
+	}
 }
 
 type ShardLimiter struct {
@@ -40,7 +87,7 @@ func NewShardLimiter(qs, cap int, speedFill float64, tfd, tdu time.Duration) *Sh
 	}
 
 	for val := range qs {
-		sl.shards[val].data = make(map[string]*rate.Limiter)
+		sl.shards[val].data = make(map[string]*ShellLimiter)
 	}
 
 	return &sl
@@ -52,11 +99,11 @@ func (sl *ShardLimiter) Allow(ip string) bool {
 	shard := &sl.shards[idx]
 
 	shard.rm.Lock()
-	defer shard.rm.RUnlock()
+	defer shard.rm.Unlock()
 
 	lim, ok := shard.data[ip]
 	if !ok {
-		lim := rate.NewLimiter(rate.Limit(sl.speedFill), sl.cap)
+		lim := NewShellLimiter(sl.speedFill, sl.cap)
 		shard.data[ip] = lim
 	}
 
@@ -75,13 +122,6 @@ func (sl *ShardLimiter) getShardIndexFromIp(ip string) int {
 	return int(index % uint32(sl.cap))
 }
 
-func (sh *Shard) DelLimiter(ip string) {
-	sh.rm.Lock()
-	defer sh.rm.Unlock()
-
-	delete(sh.data, ip)
-}
-
 func (sl *ShardLimiter) DeleteUnuse(ctx context.Context) {
 
 	ticker := time.NewTicker(sl.timeForDel)
@@ -94,7 +134,7 @@ func (sl *ShardLimiter) DeleteUnuse(ctx context.Context) {
 			return
 		case <-ticker.C:
 
-			now := time.Now()
+			now := time.Now().Add(-1 * sl.timeDontUse)
 
 			for i := range sl.qntyShards {
 
@@ -102,8 +142,16 @@ func (sl *ShardLimiter) DeleteUnuse(ctx context.Context) {
 				ipForDel := make([]string, 0, len(shard.data))
 
 				shard.rm.RLock()
+				for key, val := range shard.data {
+					if !val.IsUsed(now) {
+						ipForDel = append(ipForDel, key)
+					}
+				}
+				shard.rm.RUnlock()
 
-				shard.rm.Unlock()
+				for _, val := range ipForDel {
+					shard.DelIfUnuse(val, now)
+				}
 
 			}
 
@@ -111,4 +159,16 @@ func (sl *ShardLimiter) DeleteUnuse(ctx context.Context) {
 
 	}
 
+}
+
+type MockShardLimiter struct{}
+
+func (msl *MockShardLimiter) Allow(ip string) bool {
+	return true
+}
+
+func GetMockShardLimiter() ShardRateLimiter {
+	m := MockShardLimiter{}
+	ref := &m
+	return ref
 }

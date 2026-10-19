@@ -1,25 +1,35 @@
 package test
 
 import (
+	"context"
+	"fmt"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strconv"
 	"testing"
 	"time"
+	"user_service/config"
 	"user_service/domain"
+	"user_service/initial/limiter"
 	"user_service/initial/middleware"
+	"user_service/pkg/repoerrors"
+	"user_service/util"
+	"uuid"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestPanicRecoveryMiddleware(t *testing.T) {
-
+	mockLimiter := limiter.GetMockShardLimiter()
 	mockAudit := domain.GetMockAuditService()
 
 	handlerF := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("Fatal error")
 	})
 
-	MyMiddleware := middleware.NewMiddleware(mockAudit)
+	MyMiddleware := middleware.NewMiddleware(mockAudit, mockLimiter)
 
 	handler := MyMiddleware.PanicRecovery(handlerF)
 
@@ -39,6 +49,7 @@ func TestPanicRecoveryMiddleware(t *testing.T) {
 
 func TestMakeTraceIdInMiddleware(t *testing.T) {
 
+	mockLimiter := limiter.GetMockShardLimiter()
 	mockAudit := domain.GetMockAuditService()
 
 	handlerOurTraceId := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +66,7 @@ func TestMakeTraceIdInMiddleware(t *testing.T) {
 
 	})
 
-	UMiddleware := middleware.NewMiddleware(mockAudit)
+	UMiddleware := middleware.NewMiddleware(mockAudit, mockLimiter)
 
 	handler := UMiddleware.TraceControl(handlerOurTraceId)
 
@@ -99,6 +110,7 @@ func TestMakeTraceIdInMiddleware(t *testing.T) {
 
 func TestLoggerMiddlewareTest(t *testing.T) {
 
+	mockLimiter := limiter.GetMockShardLimiter()
 	fieldsForCheckInt := []string{
 		"Method",
 		"Pattern",
@@ -198,7 +210,7 @@ func TestLoggerMiddlewareTest(t *testing.T) {
 		},
 	}
 
-	UMiddleware := middleware.NewMiddleware(au)
+	UMiddleware := middleware.NewMiddleware(au, mockLimiter)
 	requestIdHeader := "X-Request-Id"
 
 	for _, tt := range testTable {
@@ -259,9 +271,12 @@ func TestLoggerMiddlewareTest(t *testing.T) {
 
 func TestRateLimiterMiddleware(t *testing.T) {
 
+	shardLimiter := limiter.NewShardLimiter(10, 1000, 10.0,
+		5*time.Minute, 5*time.Minute)
+
 	au := domain.GetMockAuditService()
 
-	UMiddleware := middleware.NewMiddleware(au)
+	UMiddleware := middleware.NewMiddleware(au, shardLimiter)
 
 	handlerF := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
@@ -319,4 +334,513 @@ func TestRateLimiterMiddleware(t *testing.T) {
 	<-timer.C
 	timer.Stop()
 
+}
+
+func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
+
+	util.LoadEnvFile()
+
+	auditMock := domain.GetMockEmptyAuditService()
+	sessionMock := new(domain.SessionStoreMock)
+	userStoreMock := new(domain.UserStoreMock)
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
+	AuthMiddl := middleware.NewAuthMiddleware(auditMock, sessionMock, userStoreMock, cm)
+
+	key1 := uuid.NewV7()
+	key2 := uuid.NewV7()
+
+	table := []struct {
+		Name     string
+		Comm     string
+		IsError  bool
+		UserId   uuid.UUID
+		DeviceId string
+		Agent    string
+		Access   middleware.AccessToken
+		Refresh  middleware.RefreshToken
+	}{
+		{
+			Name:     "trying with empty fields",
+			Comm:     "should return error",
+			IsError:  true,
+			UserId:   key1,
+			DeviceId: "",
+			Agent:    "",
+			Access:   middleware.AccessToken{},
+			Refresh:  middleware.RefreshToken{},
+		},
+		{
+			Name:     "normal variant",
+			Comm:     "after converting field should be equal",
+			IsError:  false,
+			UserId:   key2,
+			DeviceId: "123456",
+			Agent:    "chrome",
+			Access: middleware.AccessToken{
+				UserId:    key2,
+				DeviceId:  "123456",
+				Agent:     "chrome",
+				TokenType: middleware.AccessTokenType,
+				RegisteredClaims: jwt.RegisteredClaims{
+					ID:        uuid.New().String(),
+					Issuer:    "user-service",
+					Subject:   key2.String(),
+					ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+					IssuedAt:  jwt.NewNumericDate(time.Now()),
+				},
+			},
+			Refresh: middleware.RefreshToken{
+				UserId:    key2,
+				TokenType: middleware.RefreshTokenType,
+				RegisteredClaims: jwt.RegisteredClaims{
+					ID:        uuid.New().String(),
+					Issuer:    "user-service",
+					Subject:   key2.String(),
+					ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * 7 * time.Hour)),
+					IssuedAt:  jwt.NewNumericDate(time.Now()),
+				},
+			},
+		},
+	}
+
+	for _, val := range table {
+
+		t.Run(val.Name, func(t *testing.T) {
+			access, refresh, err := AuthMiddl.GeneratePairToken(val.UserId, val.DeviceId, val.Agent)
+			if val.IsError {
+				if err == nil {
+					t.Errorf("fail generate pair token should return error")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("fail generate pair token error:%v", err)
+			}
+
+			token, err := jwt.ParseWithClaims(access,
+				&middleware.AccessToken{},
+				func(t *jwt.Token) (any, error) {
+					return cm.Get().TokenConf.AccessBt, nil
+				},
+				jwt.WithValidMethods([]string{"HS256"}),
+				jwt.WithIssuer(middleware.Issuer))
+
+			if err != nil {
+				t.Errorf("fail parse token error:%v", err)
+			}
+
+			claim, ok := token.Claims.(*middleware.AccessToken)
+			if !ok || !token.Valid {
+				t.Errorf("fail generate token access dont valid")
+			}
+
+			if claim.TokenType != val.Access.TokenType || claim.DeviceId != val.Access.DeviceId ||
+				claim.Agent != val.Access.Agent || claim.UserId != val.Access.UserId {
+				t.Errorf("fail generate token access field dont equal")
+			}
+
+			tokenRef, err := jwt.ParseWithClaims(refresh,
+				&middleware.RefreshToken{},
+				func(t *jwt.Token) (any, error) {
+					return cm.Get().TokenConf.RefreshBt, nil
+				},
+				jwt.WithValidMethods([]string{"HS256"}),
+				jwt.WithIssuer(middleware.Issuer))
+
+			if err != nil {
+				t.Errorf("fail parse token error:%v", err)
+			}
+
+			claimRef, ok := tokenRef.Claims.(*middleware.RefreshToken)
+			if !ok || !tokenRef.Valid {
+				t.Errorf("fail generate token refresh dont valid")
+			}
+
+			if claimRef.TokenType != val.Refresh.TokenType || claimRef.UserId != val.Refresh.UserId {
+				t.Errorf("fail generate token refresh field dont equal")
+			}
+
+		})
+
+	}
+
+}
+
+func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
+
+	util.LoadEnvFile()
+
+	auditMock := domain.GetMockEmptyAuditService()
+	sessionMock := new(domain.SessionStoreMock)
+	userStoreMock := new(domain.UserStoreMock)
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
+	AuthMiddl := middleware.NewAuthMiddleware(auditMock, sessionMock, userStoreMock, cm)
+
+	invalidKey, err := GenerateSecret(32)
+	if err != nil {
+		t.Errorf("failed generate invalid key error:%v", err)
+	}
+
+	table := []struct {
+		Name         string
+		Comm         string
+		IsError      bool
+		CustomGen    bool
+		UserId       uuid.UUID
+		DeviceId     string
+		Agent        string
+		IssueAt      time.Time
+		Exp          time.Time
+		SignatureAlg string
+		Key          []byte
+		Err          *repoerrors.RepoError
+	}{
+		{
+			Name:         "correct_token",
+			Comm:         "should return nil",
+			IsError:      false,
+			CustomGen:    false,
+			UserId:       uuid.NewV7(),
+			DeviceId:     "12345",
+			Agent:        "chrome",
+			IssueAt:      time.Now(),
+			Exp:          time.Now().Add(15 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          cm.Get().TokenConf.AccessBt,
+			Err:          nil,
+		},
+		{
+			Name:         "expired_token",
+			Comm:         "should return error expired",
+			IsError:      true,
+			CustomGen:    false,
+			UserId:       uuid.NewV7(),
+			DeviceId:     "12345",
+			Agent:        "chrome",
+			IssueAt:      time.Now().Add(-20 * time.Minute),
+			Exp:          time.Now().Add(-5 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          cm.Get().TokenConf.AccessBt,
+			Err:          middleware.ErrExpToken,
+		},
+		{
+			Name:         "no_correct_token",
+			Comm:         "should return error dont correct token",
+			IsError:      true,
+			CustomGen:    true,
+			UserId:       uuid.NewV7(),
+			DeviceId:     "12345",
+			Agent:        "",
+			IssueAt:      time.Now(),
+			Exp:          time.Now().Add(15 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          cm.Get().TokenConf.AccessBt,
+			Err:          middleware.ErrInvalidToken,
+		},
+		{
+			Name:         "token_issue_at_future_date",
+			Comm:         "should return error issue future date",
+			IsError:      true,
+			CustomGen:    false,
+			UserId:       uuid.NewV7(),
+			DeviceId:     "12345",
+			Agent:        "chrome",
+			IssueAt:      time.Now().Add(15 * time.Minute),
+			Exp:          time.Now().Add(30 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          cm.Get().TokenConf.AccessBt,
+			Err:          middleware.ErrFutureDateToken,
+		},
+		{
+			Name:         "invalid_token_signature",
+			Comm:         "should return error invalid_token_signature",
+			IsError:      true,
+			CustomGen:    false,
+			UserId:       uuid.NewV7(),
+			DeviceId:     "12345",
+			Agent:        "chrome",
+			IssueAt:      time.Now(),
+			Exp:          time.Now().Add(15 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          invalidKey,
+			Err:          middleware.ErrInvalidSignToken,
+		},
+		{
+			Name:         "empty_token",
+			Comm:         "should return error empty field",
+			IsError:      true,
+			CustomGen:    false,
+			UserId:       uuid.Nil(),
+			DeviceId:     "",
+			Agent:        "",
+			IssueAt:      time.Now(),
+			Exp:          time.Now().Add(15 * time.Minute),
+			SignatureAlg: "",
+			Key:          invalidKey,
+			Err:          middleware.ErrFieldEmpty,
+		},
+	}
+
+	for _, val := range table {
+
+		t.Run(val.Name, func(t *testing.T) {
+
+			var accessToken string
+			if !val.CustomGen {
+				accessStr := middleware.NewAccessToken(val.UserId, val.DeviceId, val.Agent)
+				accessStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
+				accessStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssueAt)
+
+				token := jwt.NewWithClaims(jwt.SigningMethodHS256, accessStr)
+				accessToken, err = token.SignedString(val.Key)
+				if err != nil {
+					t.Errorf("fail error signing token err:%v", err)
+					return
+				}
+			} else {
+
+				data := make(map[string]any)
+				data["user_id"] = val.UserId.String()
+				data["device_id"] = val.DeviceId
+				data["agent"] = val.Agent
+
+				dataJwt := jwt.MapClaims(data)
+
+				if _, ok := dataJwt["exp"]; !ok {
+					dataJwt["exp"] = jwt.NewNumericDate(time.Now().Add(15 * time.Minute))
+				}
+
+				if _, ok := dataJwt["iat"]; !ok {
+					dataJwt["iat"] = jwt.NewNumericDate(time.Now())
+				}
+
+				token := jwt.NewWithClaims(jwt.SigningMethodHS256, dataJwt)
+
+				accessToken, err = token.SignedString(val.Key)
+				if err != nil {
+					t.Errorf("fail error signing token err:%v", err)
+					return
+				}
+			}
+
+			if val.Name == "empty_token" {
+				accessToken = ""
+			}
+
+			err = AuthMiddl.ValidAccessToken(accessToken)
+			if val.IsError {
+				if !val.Err.Is(err) {
+					t.Errorf("fail error dont equal should err:%v returned err:%v", val.Err, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("fail shouldnt return error, err:%v", err)
+				}
+			}
+
+		})
+	}
+
+}
+
+func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
+
+	util.LoadEnvFile()
+
+	auditMock := domain.GetMockEmptyAuditService()
+	sessionMock := new(domain.SessionStoreMock)
+	userStoreMock := new(domain.UserStoreMock)
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
+	AuthMiddl := middleware.NewAuthMiddleware(auditMock, sessionMock, userStoreMock, cm)
+
+	invalidKey, err := GenerateSecret(32)
+	if err != nil {
+		t.Errorf("failed generate invalid key error:%v", err)
+	}
+
+	table := []struct {
+		Name         string
+		Comm         string
+		IsError      bool
+		CustomGen    bool
+		UserId       uuid.UUID
+		DeviceId     string
+		Agent        string
+		IssueAt      time.Time
+		Exp          time.Time
+		SignatureAlg string
+		Key          []byte
+		Err          *repoerrors.RepoError
+	}{
+		{
+			Name:         "correct_token",
+			Comm:         "should return nil",
+			IsError:      false,
+			CustomGen:    false,
+			UserId:       uuid.NewV7(),
+			DeviceId:     "12345",
+			Agent:        "chrome",
+			IssueAt:      time.Now(),
+			Exp:          time.Now().Add(15 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          cm.Get().TokenConf.RefreshBt,
+			Err:          nil,
+		},
+		{
+			Name:         "expired_token",
+			Comm:         "should return error expired",
+			IsError:      true,
+			CustomGen:    false,
+			UserId:       uuid.NewV7(),
+			DeviceId:     "12345",
+			Agent:        "chrome",
+			IssueAt:      time.Now().Add(-20 * time.Minute),
+			Exp:          time.Now().Add(-5 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          cm.Get().TokenConf.RefreshBt,
+			Err:          middleware.ErrExpToken,
+		},
+		{
+			Name:         "no_correct_token",
+			Comm:         "should return error dont correct token",
+			IsError:      true,
+			CustomGen:    true,
+			UserId:       uuid.Nil(),
+			DeviceId:     "",
+			Agent:        "",
+			IssueAt:      time.Now(),
+			Exp:          time.Now().Add(15 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          cm.Get().TokenConf.RefreshBt,
+			Err:          middleware.ErrInvalidToken,
+		},
+		{
+			Name:         "token_issue_at_future_date",
+			Comm:         "should return error issue future date",
+			IsError:      true,
+			CustomGen:    false,
+			UserId:       uuid.NewV7(),
+			DeviceId:     "12345",
+			Agent:        "chrome",
+			IssueAt:      time.Now().Add(15 * time.Minute),
+			Exp:          time.Now().Add(30 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          cm.Get().TokenConf.RefreshBt,
+			Err:          middleware.ErrFutureDateToken,
+		},
+		{
+			Name:         "invalid_token_signature",
+			Comm:         "should return error invalid_token_signature",
+			IsError:      true,
+			CustomGen:    false,
+			UserId:       uuid.NewV7(),
+			DeviceId:     "12345",
+			Agent:        "chrome",
+			IssueAt:      time.Now(),
+			Exp:          time.Now().Add(15 * time.Minute),
+			SignatureAlg: "HS256",
+			Key:          invalidKey,
+			Err:          middleware.ErrInvalidSignToken,
+		},
+		{
+			Name:         "empty_token",
+			Comm:         "should return error empty field",
+			IsError:      true,
+			CustomGen:    false,
+			UserId:       uuid.Nil(),
+			DeviceId:     "",
+			Agent:        "",
+			IssueAt:      time.Now(),
+			Exp:          time.Now().Add(15 * time.Minute),
+			SignatureAlg: "",
+			Key:          invalidKey,
+			Err:          middleware.ErrFieldEmpty,
+		},
+	}
+
+	for _, val := range table {
+
+		t.Run(val.Name, func(t *testing.T) {
+
+			var refreshToken string
+			if !val.CustomGen {
+				refreshStr := middleware.NewRefreshToken(val.UserId)
+				refreshStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
+				refreshStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssueAt)
+
+				token := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshStr)
+				refreshToken, err = token.SignedString(val.Key)
+				if err != nil {
+					t.Errorf("fail error signing token err:%v", err)
+					return
+				}
+			} else {
+
+				data := make(map[string]any)
+				data["user_id"] = val.UserId.String()
+				data["device_id"] = val.DeviceId
+				data["agent"] = val.Agent
+
+				dataJwt := jwt.MapClaims(data)
+
+				if _, ok := dataJwt["exp"]; !ok {
+					dataJwt["exp"] = jwt.NewNumericDate(time.Now().Add(15 * time.Minute))
+				}
+
+				if _, ok := dataJwt["iat"]; !ok {
+					dataJwt["iat"] = jwt.NewNumericDate(time.Now())
+				}
+
+				token := jwt.NewWithClaims(jwt.SigningMethodHS256, dataJwt)
+
+				refreshToken, err = token.SignedString(val.Key)
+				if err != nil {
+					t.Errorf("fail error signing token err:%v", err)
+					return
+				}
+			}
+
+			if val.Name == "empty_token" {
+				refreshToken = ""
+			}
+
+			err = AuthMiddl.ValidRefreshToken(refreshToken)
+			if val.IsError {
+				if !val.Err.Is(err) {
+					t.Errorf("fail error dont equal should err:%v returned err:%v", val.Err, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("fail shouldnt return error, err:%v", err)
+				}
+			}
+
+		})
+	}
+
+}
+
+func GenerateSecret(nBytes int) ([]byte, error) {
+	b := make([]byte, nBytes) // 32 байта = 256 бит
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	return b, nil // для хранения в env
+}
+
+// gen ai
+func generateRandomIPWithPort() string {
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	ip := fmt.Sprintf("%d.%d.%d.%d", r.Intn(256), r.Intn(256), r.Intn(256), r.Intn(256))
+	port := r.Intn(65535) + 1
+
+	return fmt.Sprintf("%s:%d", ip, port)
 }
