@@ -2,6 +2,8 @@ package test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -19,6 +21,7 @@ import (
 	"uuid"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/stretchr/testify/mock"
 )
 
 func TestPanicRecoveryMiddleware(t *testing.T) {
@@ -632,7 +635,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 				accessToken = ""
 			}
 
-			err = AuthMiddl.ValidAccessToken(accessToken)
+			_, err = AuthMiddl.ValidAccessToken(accessToken)
 			if val.IsError {
 				if !val.Err.Is(err) {
 					t.Errorf("fail error dont equal should err:%v returned err:%v", val.Err, err)
@@ -825,6 +828,484 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 		})
 	}
 
+}
+
+type ResponseResult struct {
+	Code    int         `json:"code"`
+	Headers http.Header `json:"headers"`
+	Body    []byte      `json:"body"` // Изменили тип на []byte
+}
+
+func TestAuthMiddlewareCheckUp(t *testing.T) {
+	shardLimiter := limiter.GetMockShardLimiter()
+	auditMock := domain.GetMockAuditService()
+	sessionStoreMock := new(domain.SessionStoreMock)
+
+	UMiddleware := middleware.NewMiddleware(auditMock, shardLimiter)
+
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
+	authMiddl := middleware.NewAuthMiddleware(auditMock, sessionStoreMock,
+		new(domain.UserStoreMock), cm)
+
+	handlerF := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := UMiddleware.RateLimiterForIp(handlerF)
+	handler = UMiddleware.Logger(handler)
+	handler = UMiddleware.TraceControl(handler)
+	handler = UMiddleware.PanicRecovery(handler)
+	handler = authMiddl.CheckInboxAccessToken(handler)
+
+	id1 := uuid.NewV7()
+	trueSession := []domain.Session{
+		{
+			UserId:    id1,
+			DeviceId:  "12345",
+			Agent:     "chrome",
+			Ip:        "1.1.1.1",
+			CreatedAt: time.Now().Add(-20 * time.Hour),
+		},
+	}
+
+	table := []struct {
+		Name            string
+		Comm            string
+		IsError         bool
+		UserId          uuid.UUID
+		DeviceId        string
+		Agent           string
+		Exp             time.Time
+		IssAt           time.Time
+		Iss             string
+		IpReq           string
+		AgentReq        string
+		DeviceIdReq     string
+		Sessions        []domain.Session
+		MethodMustCall  []string
+		MethodNoCall    []string
+		fnSetUpMock     func()
+		fnGetRespResult func() *ResponseResult
+	}{
+		{
+			Name:           "correct_request",
+			Comm:           "shoudl return 200 ok",
+			IsError:        false,
+			UserId:         id1,
+			DeviceId:       "12345",
+			Agent:          "chrome",
+			Exp:            time.Now().Add(15 * time.Minute),
+			IssAt:          time.Now(),
+			Iss:            middleware.Issuer,
+			IpReq:          "1.1.1.1",
+			MethodMustCall: []string{"GetAllSession"},
+			MethodNoCall:   []string{},
+			Sessions: []domain.Session{
+				{
+					UserId:    id1,
+					DeviceId:  "12345",
+					Agent:     "chrome",
+					Ip:        "1.1.1.1",
+					CreatedAt: time.Now().Add(-5 * time.Hour),
+				},
+			},
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetAllSession", context.Background(), id1).
+					Return(trueSession, nil).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+				respNew := httptest.NewRecorder()
+				respNew.WriteHeader(http.StatusOK)
+				return &ResponseResult{
+					Code:    respNew.Code,
+					Headers: respNew.Header(),
+					Body:    respNew.Body.Bytes(), // Используем .Bytes() вместо .String()
+				}
+			},
+		},
+		{
+			Name:           "empty_auth",
+			Comm:           "shoudl return 401 auth token empty",
+			IsError:        true,
+			UserId:         uuid.Nil(),
+			DeviceId:       "12345",
+			Agent:          "chrome",
+			Exp:            time.Now().Add(15 * time.Minute),
+			IssAt:          time.Now(),
+			Iss:            middleware.Issuer,
+			MethodMustCall: []string{},
+			MethodNoCall:   []string{"GetAllSession"},
+			Sessions:       trueSession,
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetAllSession", context.Background(), id1).
+					Return(trueSession, nil).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+
+				bodyJson := `
+				{
+					"error": "Unauthorized",
+					"message": "Authorization header is missing",
+					"code": "AUTH_HEADER_MISSING"					
+				}
+				`
+				respNew := httptest.NewRecorder()
+				respNew.WriteHeader(http.StatusUnauthorized)
+
+				respNew.Write([]byte(bodyJson))
+				respNew.Header().Set("WWW-Authenticate", "Bearer")
+				respNew.Header().Set("Content-Type", "application/json")
+
+				return &ResponseResult{
+					Code:    respNew.Code,
+					Headers: respNew.Header(),
+					Body:    respNew.Body.Bytes(), // Используем .Bytes() вместо .String()
+				}
+			},
+		},
+		{
+			Name:           "expired_token",
+			Comm:           "should return 401 with code token_expired",
+			IsError:        true,
+			UserId:         id1,
+			DeviceId:       "12345",
+			Agent:          "chrome",
+			Exp:            time.Now().Add(-5 * time.Minute),
+			IssAt:          time.Now().Add(-20 * time.Minute),
+			Iss:            middleware.Issuer,
+			IpReq:          "1.1.1.1",
+			AgentReq:       "chrome",
+			DeviceIdReq:    "12345",
+			Sessions:       trueSession,
+			MethodMustCall: []string{},
+			MethodNoCall:   []string{"GetAllSession"},
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetAllSession", context.Background(), id1).
+					Return(trueSession, nil).
+					Once()
+
+			},
+			fnGetRespResult: func() *ResponseResult {
+
+				bodyJson := `
+				{
+					"error": "Unauthorized",
+					"message": "The access token expired",
+					"code": "TOKEN_EXPIRED"					
+				}
+				`
+
+				respNew := httptest.NewRecorder()
+				respNew.WriteHeader(http.StatusUnauthorized)
+				respNew.Write([]byte(bodyJson))
+				respNew.Header().Add("WWW-Authenticate",
+					"Bearer error=\"invalid_token\", error_description=\"The access token expired\"")
+				respNew.Header().Set("Content-Type", "application/json")
+				return &ResponseResult{
+					Code:    respNew.Code,
+					Headers: respNew.Header(),
+					Body:    respNew.Body.Bytes(), // Используем .Bytes() вместо .String()
+				}
+			},
+		},
+		{
+			Name:           "invalid_token",
+			Comm:           "should return 401 invalid token",
+			IsError:        true,
+			UserId:         id1,
+			DeviceId:       "12345",
+			Agent:          "",
+			Exp:            time.Now().Add(15 * time.Minute),
+			IssAt:          time.Now(),
+			Iss:            middleware.Issuer,
+			IpReq:          "1.1.1.1",
+			AgentReq:       "chrome",
+			DeviceIdReq:    "12345",
+			Sessions:       trueSession,
+			MethodMustCall: []string{},
+			MethodNoCall:   []string{},
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+			},
+			fnGetRespResult: func() *ResponseResult {
+
+				bodyJson := `
+				{
+					"error": "Unauthorized",
+					"message": "Access token invalid",
+					"code": "TOKEN_INVALID"					
+				}
+				`
+				resp := httptest.NewRecorder()
+				resp.WriteHeader(http.StatusUnauthorized)
+				resp.Write([]byte(bodyJson))
+
+				resp.Header().Add("WWW-Authenticate",
+					"Bearer error=\"invalid_token\", error_description=\"The access token invalid\"")
+				resp.Header().Set("Content-Type", "application/json")
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(), // Используем .Bytes() вместо .String()
+				}
+			},
+		},
+		{
+			Name:           "header_and_session_dont_equal",
+			Comm:           "should return 401 dont reg session",
+			IsError:        true,
+			UserId:         id1,
+			DeviceId:       "12345",
+			Agent:          "chrome",
+			Exp:            time.Now().Add(15 * time.Minute),
+			IssAt:          time.Now(),
+			Iss:            middleware.Issuer,
+			IpReq:          "3.3.3.3",
+			AgentReq:       "Safari",
+			DeviceIdReq:    "54321",
+			Sessions:       trueSession,
+			MethodMustCall: []string{"GetAllSession"},
+			MethodNoCall:   []string{},
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetAllSession", context.Background(), id1).
+					Return(trueSession, nil).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+
+				bodyJson := `
+				{
+					"error": "Unauthorized",
+					"message": "Session context mismatch. Security violation.",
+					"code": "SESSION_COMPROMISED"					
+				}
+				`
+
+				resp := httptest.NewRecorder()
+				resp.WriteHeader(http.StatusUnauthorized)
+				resp.Write([]byte(bodyJson))
+				resp.Header().Add("WWW-Authenticate",
+					"Bearer error=\"invalid_token\", error_description=\"Session context mismatch. Security validation failed.\"")
+				resp.Header().Set("Content-Type", "application/json")
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(), // Используем .Bytes() вместо .String()
+				}
+			},
+		},
+		{
+			Name:           "dont_have_session",
+			Comm:           "should return 401 dont reg session",
+			IsError:        true,
+			UserId:         id1,
+			DeviceId:       "12345",
+			Agent:          "chrome",
+			Exp:            time.Now().Add(15 * time.Minute),
+			IssAt:          time.Now(),
+			Iss:            middleware.Issuer,
+			IpReq:          "3.3.3.3",
+			AgentReq:       "Safari",
+			DeviceIdReq:    "54321",
+			Sessions:       []domain.Session{},
+			MethodMustCall: []string{"GetAllSession"},
+			MethodNoCall:   []string{},
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetAllSession", context.Background(), id1).
+					Return([]domain.Session{}, nil).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+
+				bodyJson := `
+				{
+					"error": "Unauthorized",
+					"message": "User session is invalid or user not found",
+					"code": "USER_NOT_FOUND"					
+				}
+				`
+
+				resp := httptest.NewRecorder()
+				resp.WriteHeader(http.StatusUnauthorized)
+				resp.Write([]byte(bodyJson))
+				resp.Header().Add("WWW-Authenticate",
+					"Bearer error=\"invalid_token\", error_description=\"The access token is unknown or invalid\"")
+				resp.Header().Set("Content-Type", "application/json")
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(), // Используем .Bytes() вместо .String()
+				}
+			},
+		},
+		{
+			Name:           "session_store_fail",
+			Comm:           "should return 500 try later",
+			IsError:        true,
+			UserId:         id1,
+			DeviceId:       "12345",
+			Agent:          "chrome",
+			Exp:            time.Now().Add(15 * time.Minute),
+			IssAt:          time.Now(),
+			Iss:            middleware.Issuer,
+			IpReq:          "1.1.1.1",
+			AgentReq:       "chrome",
+			DeviceIdReq:    "12345",
+			Sessions:       trueSession,
+			MethodMustCall: []string{"GetAllSession"},
+			MethodNoCall:   []string{},
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetAllSession", context.Background(), id1).
+					Return(nil, errors.New("fail session store")).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+
+				bodyJson := `
+				{
+					"error": "Internal Server Error",
+					"message": "Authentication service is temporarily unavailable. Please try again later.",
+					"code": "AUTH_SERVICE_ERROR"					
+				}
+				`
+
+				resp := httptest.NewRecorder()
+				resp.WriteHeader(http.StatusInternalServerError)
+				resp.Write([]byte(bodyJson))
+				resp.Header().Set("Content-Type", "application/json")
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(), // Используем .Bytes() вместо .String()
+				}
+			},
+		},
+	}
+
+	for _, val := range table {
+
+		t.Run(val.Name, func(t *testing.T) {
+
+			val.fnSetUpMock()
+
+			var tokenstr string
+
+			if val.UserId != uuid.Nil() {
+				accessStr := middleware.NewAccessToken(val.UserId, val.DeviceId, val.Agent)
+				accessStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
+				accessStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssAt)
+
+				token := jwt.NewWithClaims(jwt.SigningMethodHS256, accessStr)
+				accessToken, err := token.SignedString(cm.Get().TokenConf.AccessBt)
+				if err != nil {
+					t.Fatalf("fail gen token err:%v", err)
+				}
+
+				tokenstr = accessToken
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+tokenstr)
+			req.Header.Set("User-Agent", val.Agent)
+
+			req.RemoteAddr = val.IpReq
+
+			cookie := &http.Cookie{
+				Name:     "DeviceId",
+				Value:    val.DeviceId,
+				HttpOnly: true,
+			}
+
+			req.AddCookie(cookie)
+
+			respOut := httptest.NewRecorder()
+
+			handler.ServeHTTP(respOut, req)
+
+			mustResp := val.fnGetRespResult()
+
+			if mustResp.Code != respOut.Code {
+				t.Errorf("fail http status code dont equal want %v have %v", mustResp.Code, respOut.Code)
+			}
+
+			if len(mustResp.Body) > 0 {
+
+				var mustErrBody middleware.ErrBody
+				err := json.Unmarshal(mustResp.Body, &mustErrBody)
+				if err != nil {
+					t.Fatalf("unmarshal json must %v", err)
+				}
+
+				var outErrBody middleware.ErrBody
+				err = json.Unmarshal(respOut.Body.Bytes(), &outErrBody)
+				if err != nil {
+					t.Fatalf("unmarshal json out %v", err)
+				}
+
+				if mustErrBody.Err != outErrBody.Err || mustErrBody.Code != outErrBody.Code ||
+					mustErrBody.Message != outErrBody.Message {
+					t.Errorf("fail http body dont equal")
+				}
+
+			}
+
+			errHeaderAuth := mustResp.Headers.Get("WWW-Authenticate")
+			if errHeaderAuth != "" {
+				respHead := respOut.Header().Get("WWW-Authenticate")
+				if errHeaderAuth != respHead {
+					t.Errorf("fail http auth header dont equal want %v have %v", errHeaderAuth, respHead)
+				}
+			}
+
+			for _, must := range val.MethodMustCall {
+				called := false
+				for _, call := range sessionStoreMock.Calls {
+					if call.Method == must {
+						called = true
+						break
+					}
+				}
+
+				if !called {
+					t.Errorf("fail dont check session, method dont called %v want called", must)
+				}
+			}
+
+			if len(sessionStoreMock.Calls) != 0 {
+				for _, must := range val.MethodNoCall {
+					called := false
+
+					for _, call := range sessionStoreMock.Calls {
+						if call.Method == must {
+							called = true
+							break
+						}
+					}
+
+					if called {
+						t.Errorf("fail dont check session, method called %v want dont called", must)
+					}
+				}
+			}
+		})
+	}
+}
+
+func resetMock(m *mock.Mock, t *testing.T) {
+	m.ExpectedCalls = nil
+	m.Calls = nil
+	m.Test(t) // перепривязать к TestingT текущего подтеста
 }
 
 func GenerateSecret(nBytes int) ([]byte, error) {

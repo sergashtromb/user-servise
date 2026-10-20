@@ -32,16 +32,20 @@ const (
 
 	EventInboxRequestStart EventType = "inbox_request_start"
 	EventInboxRequestEnd   EventType = "inbox_request_end"
+
+	EventFailedParseErrAuthAnswer    EventType = "failed_json_parse_err_auth_answer"
+	EventFailedParseIpFromRemoteAddr EventType = "failed_json_parse_ip_from_remote_addr"
 )
 
 type EventPlace string
 
 const (
-	EventPlaceStore      EventPlace = "STORE"
-	EventPlaceHandler    EventPlace = "HANDLER"
-	EventPlaceMiddleware EventPlace = "MIDDLEWARE"
-	EventPlaceSystem     EventPlace = "SYSTEM"
-	EventPlaceRedis      EventPlace = "REDIS"
+	EventPlaceStore          EventPlace = "STORE"
+	EventPlaceHandler        EventPlace = "HANDLER"
+	EventPlaceMiddleware     EventPlace = "MIDDLEWARE"
+	EventPlaceAuthMiddleware EventPlace = "AUTH_MIDDLEWARE"
+	EventPlaceSystem         EventPlace = "SYSTEM"
+	EventPlaceRedis          EventPlace = "REDIS"
 )
 
 type AuditEvent struct {
