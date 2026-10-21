@@ -473,6 +473,7 @@ type Session struct {
 	Ip        string
 	Agent     string
 	CreatedAt int64
+	Version   string
 }
 
 func (ss *Session) ToMap() map[string]interface{} {
@@ -484,6 +485,7 @@ func (ss *Session) ToMap() map[string]interface{} {
 	data[FieldIp] = ss.Ip
 	data[FieldAgent] = ss.Agent
 	data[FieldCreatedAt] = ss.CreatedAt
+	data[FieldVersion] = ss.Version
 
 	return data
 }
@@ -502,6 +504,7 @@ func (ss *Session) ToDomain() (*dm.Session, error) {
 		Ip:        ss.Ip,
 		Agent:     ss.Agent,
 		CreatedAt: createdAt,
+		Version:   ss.Version,
 	}, nil
 }
 
@@ -512,6 +515,7 @@ func SessionFromDomainSession(ss *dm.Session) *Session {
 		Ip:        ss.Ip,
 		Agent:     ss.Agent,
 		CreatedAt: ss.CreatedAt.Unix(),
+		Version:   ss.Version,
 	}
 }
 
@@ -522,6 +526,7 @@ func SessionFromMapString(data map[string]string) (*Session, error) {
 		DeviceId: data[FieldDeviceId],
 		Ip:       data[FieldIp],
 		Agent:    data[FieldAgent],
+		Version:  data[FieldVersion],
 	}
 
 	intCreatedAt, err := strconv.ParseInt(data[FieldCreatedAt], 10, 64)

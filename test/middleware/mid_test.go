@@ -343,13 +343,8 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 
 	util.LoadEnvFile()
 
-	auditMock := domain.GetMockEmptyAuditService()
-	sessionMock := new(domain.SessionStoreMock)
-	userStoreMock := new(domain.UserStoreMock)
 	cm := config.NewConfigManager()
 	cm.Init(context.TODO(), "")
-
-	AuthMiddl := middleware.NewAuthMiddleware(auditMock, sessionMock, userStoreMock, cm)
 
 	key1 := uuid.NewV7()
 	key2 := uuid.NewV7()
@@ -411,7 +406,7 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 	for _, val := range table {
 
 		t.Run(val.Name, func(t *testing.T) {
-			access, refresh, err := AuthMiddl.GeneratePairToken(val.UserId, val.DeviceId, val.Agent)
+			access, refresh, err := middleware.GeneratePairToken(val.UserId, val.DeviceId, val.Agent, cm)
 			if val.IsError {
 				if err == nil {
 					t.Errorf("fail generate pair token should return error")
@@ -595,7 +590,8 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 
 			var accessToken string
 			if !val.CustomGen {
-				accessStr := middleware.NewAccessToken(val.UserId, val.DeviceId, val.Agent)
+				accessStr := middleware.NewAccessToken(val.UserId, val.DeviceId, val.Agent,
+					cm.Get().TokenConf.AccessLifeTime)
 				accessStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
 				accessStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssueAt)
 
@@ -774,7 +770,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 
 			var refreshToken string
 			if !val.CustomGen {
-				refreshStr := middleware.NewRefreshToken(val.UserId)
+				refreshStr := middleware.NewRefreshToken(val.UserId, cm.Get().TokenConf.RefreshLifeTime)
 				refreshStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
 				refreshStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssueAt)
 
@@ -900,7 +896,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
 			Iss:            middleware.Issuer,
-			IpReq:          "1.1.1.1",
+			IpReq:          "1.1.1.1:1234",
 			MethodMustCall: []string{"GetAllSession"},
 			MethodNoCall:   []string{},
 			Sessions: []domain.Session{
@@ -960,7 +956,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 				respNew.WriteHeader(http.StatusUnauthorized)
 
 				respNew.Write([]byte(bodyJson))
-				respNew.Header().Set("WWW-Authenticate", "Bearer")
+				respNew.Header().Set("WWW-Authenticate", "Bearer realm=\"user-service\"")
 				respNew.Header().Set("Content-Type", "application/json")
 
 				return &ResponseResult{
@@ -980,7 +976,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Exp:            time.Now().Add(-5 * time.Minute),
 			IssAt:          time.Now().Add(-20 * time.Minute),
 			Iss:            middleware.Issuer,
-			IpReq:          "1.1.1.1",
+			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
 			Sessions:       trueSession,
@@ -1026,7 +1022,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
 			Iss:            middleware.Issuer,
-			IpReq:          "1.1.1.1",
+			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
 			Sessions:       trueSession,
@@ -1068,7 +1064,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
 			Iss:            middleware.Issuer,
-			IpReq:          "3.3.3.3",
+			IpReq:          "3.3.3.3:1234",
 			AgentReq:       "Safari",
 			DeviceIdReq:    "54321",
 			Sessions:       trueSession,
@@ -1113,7 +1109,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
 			Iss:            middleware.Issuer,
-			IpReq:          "3.3.3.3",
+			IpReq:          "3.3.3.3:1234",
 			AgentReq:       "Safari",
 			DeviceIdReq:    "54321",
 			Sessions:       []domain.Session{},
@@ -1158,7 +1154,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
 			Iss:            middleware.Issuer,
-			IpReq:          "1.1.1.1",
+			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
 			Sessions:       trueSession,
@@ -1202,7 +1198,8 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			var tokenstr string
 
 			if val.UserId != uuid.Nil() {
-				accessStr := middleware.NewAccessToken(val.UserId, val.DeviceId, val.Agent)
+				accessStr := middleware.NewAccessToken(val.UserId, val.DeviceId, val.Agent,
+					cm.Get().TokenConf.AccessLifeTime)
 				accessStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
 				accessStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssAt)
 

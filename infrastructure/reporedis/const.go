@@ -16,4 +16,5 @@ const (
 	FieldIp        = "ip"
 	FieldAgent     = "agent"
 	FieldExpAt     = "expiration_at"
+	FieldVersion   = "version"
 )

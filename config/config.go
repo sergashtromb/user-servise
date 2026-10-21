@@ -60,10 +60,12 @@ type RedisConfig struct {
 }
 
 type TokensConfig struct {
-	Access    string `env:"ACCESS"`
-	Refresh   string `env:"REFRESH"`
-	AccessBt  []byte
-	RefreshBt []byte
+	Access          string `env:"ACCESS"`
+	Refresh         string `env:"REFRESH"`
+	AccessLifeTime  int    `env:"ACCESS_LIFE_TIME"`
+	RefreshLifeTime int    `env:"REFRESH_LIFE_TIME"`
+	AccessBt        []byte
+	RefreshBt       []byte
 }
 
 func NewConfigManager() *ConfigManager {
@@ -216,6 +218,10 @@ func setDefault() *Config {
 			ReadTimeout:     3,
 			WriteTimeout:    3,
 			PoolTimeout:     5,
+		},
+		TokenConf: TokensConfig{
+			AccessLifeTime:  15,
+			RefreshLifeTime: 10080,
 		},
 	}
 }

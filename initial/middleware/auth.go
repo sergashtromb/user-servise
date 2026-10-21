@@ -67,15 +67,14 @@ type AccessToken struct {
 	jwt.RegisteredClaims
 }
 
-func NewAccessToken(userId uuid.UUID, deviceId, agent string) *AccessToken {
+func NewAccessToken(userId uuid.UUID, deviceId, agent string, lifetime int) *AccessToken {
 	return &AccessToken{
 		UserId:    userId,
 		DeviceId:  deviceId,
 		Agent:     agent,
 		TokenType: AccessTokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
-			// FIXME exp time get from config(dinamic opt)
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(lifetime) * time.Minute)),
 			Issuer:    Issuer,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Subject:   userId.String(),
@@ -90,13 +89,12 @@ type RefreshToken struct {
 	jwt.RegisteredClaims
 }
 
-func NewRefreshToken(userId uuid.UUID) *RefreshToken {
+func NewRefreshToken(userId uuid.UUID, lifetime int) *RefreshToken {
 	return &RefreshToken{
 		UserId:    userId,
 		TokenType: RefreshTokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
-			// FIXME exp time get from config(dinamic opt)
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * 7 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(lifetime) * time.Minute)),
 			Issuer:    Issuer,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Subject:   userId.String(),
@@ -105,7 +103,7 @@ func NewRefreshToken(userId uuid.UUID) *RefreshToken {
 	}
 }
 
-func (am *AuthMiddleware) GeneratePairToken(userId uuid.UUID, deviceId, agent string) (string, string, error) {
+func GeneratePairToken(userId uuid.UUID, deviceId, agent string, cm *config.ConfigManager) (string, string, error) {
 
 	errFE := ErrFieldEmpty.Clone()
 	if userId == uuid.Nil() {
@@ -124,11 +122,11 @@ func (am *AuthMiddleware) GeneratePairToken(userId uuid.UUID, deviceId, agent st
 		return "", "", errFE
 	}
 
-	accessSecret := am.cm.Get().TokenConf.AccessBt
-	refreshSecret := am.cm.Get().TokenConf.RefreshBt
+	accessSecret := cm.Get().TokenConf.AccessBt
+	refreshSecret := cm.Get().TokenConf.RefreshBt
 
-	accessClaims := NewAccessToken(userId, deviceId, agent)
-	refreshClaims := NewRefreshToken(userId)
+	accessClaims := NewAccessToken(userId, deviceId, agent, cm.Get().TokenConf.AccessLifeTime)
+	refreshClaims := NewRefreshToken(userId, cm.Get().TokenConf.RefreshLifeTime)
 
 	access := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	signedAccess, err := access.SignedString(accessSecret)
