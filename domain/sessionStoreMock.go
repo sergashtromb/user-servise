@@ -23,8 +23,8 @@ func NewSessionStoreMock(t interface {
 	return m
 }
 
-func (m *SessionStoreMock) Registration(ctx context.Context, session *Session, refreshToken string) error {
-	args := m.Called(ctx, session, refreshToken)
+func (m *SessionStoreMock) Registration(ctx context.Context, session *Session, familyId uuid.UUID) error {
+	args := m.Called(ctx, session, familyId)
 	return args.Error(0)
 }
 
@@ -36,8 +36,8 @@ func (m *SessionStoreMock) GetAllSession(ctx context.Context, userId uuid.UUID) 
 	return nil, args.Error(1)
 }
 
-func (m *SessionStoreMock) GetSessionByRefresh(ctx context.Context, userId uuid.UUID, refreshToken string) (*Session, error) {
-	args := m.Called(ctx, userId, refreshToken)
+func (m *SessionStoreMock) GetSessionByFamilyId(ctx context.Context, userId uuid.UUID, familyId uuid.UUID) (*Session, error) {
+	args := m.Called(ctx, userId, familyId)
 	if v := args.Get(0); v != nil {
 		return v.(*Session), args.Error(1)
 	}

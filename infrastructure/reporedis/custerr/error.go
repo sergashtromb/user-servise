@@ -11,4 +11,5 @@ var (
 	ErrNotFound             = repoerrors.NewError(RepoName, "value not found", "004")
 	ErrBadData              = repoerrors.NewError(RepoName, "bad data", "005")
 	ErrBadArgs              = repoerrors.NewError(RepoName, "bad arguments", "006")
+	ErrSessionAlredyExist   = repoerrors.NewError(RepoName, "session with family id alredy exist", "007")
 )

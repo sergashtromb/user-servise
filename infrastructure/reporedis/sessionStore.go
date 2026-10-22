@@ -36,7 +36,7 @@ func NewSessionStore(repo *Repository, audit dm.AuditService, ttl time.Duration)
 	}
 }
 
-func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, refreshToken string) error {
+func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, familyId uuid.UUID) error {
 
 	traceId, ok := ctx.Value(dm.TraceKey).(string)
 	if !ok {
@@ -53,8 +53,8 @@ func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, 
 		regerr.Fields = append(regerr.Fields, FieldUserId)
 	}
 
-	if len(refreshToken) == 0 {
-		regerr.Fields = append(regerr.Fields, "refresh_token")
+	if familyId == uuid.Nil() {
+		regerr.Fields = append(regerr.Fields, "family_id")
 	}
 
 	if len(regerr.Fields) != 0 {
@@ -64,18 +64,18 @@ func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, 
 	localSession := SessionFromDomainSession(session)
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
-		hashFromRefresh := hashSumFromRefreshToken(refreshToken)
+		hexFamId := hex.EncodeToString(familyId[:])
 		hexid := hex.EncodeToString(session.UserId[:])
 
-		refreshKey := makeKey(RefreshKey, hexid, hashFromRefresh)
-		ssKey := makeKey(SessionKey, hexid, hashFromRefresh)
+		refreshKey := makeKey(RefreshKey, hexid, hexFamId)
+		ssKey := makeKey(SessionKey, hexid, hexFamId)
 
 		data := localSession.ToMap()
 
 		pipe := client.TxPipeline()
+		setCmd := pipe.SetNX(ctx, ssKey, hexFamId, sst.ttl)
 		pipe.HSet(ctx, refreshKey, data)
 		pipe.Expire(ctx, refreshKey, sst.ttl)
-		pipe.Set(ctx, ssKey, hashFromRefresh, sst.ttl)
 
 		_, err := pipe.Exec(ctx)
 		if err != nil {
@@ -84,6 +84,28 @@ func (sst *SessionStore) Registration(ctx context.Context, session *dm.Session, 
 				&strerr, session.UserId.String(), traceId)
 			sst.audit.Log(ctx, event)
 			return err
+		}
+
+		ok, err := setCmd.Result()
+		if err != nil || !ok {
+			if err != nil {
+
+				strerr := err.Error()
+				event := dm.NewFailedEvent(dm.EventRegistrationSessionUserFailed, dm.EventPlaceRedis,
+					&strerr, session.UserId.String(), traceId)
+				sst.audit.Log(ctx, event)
+				return err
+
+			} else {
+
+				strerr := custerr.ErrSessionAlredyExist.Error()
+				event := dm.NewFailedEvent(dm.EventRegistrationSessionUserFailed, dm.EventPlaceRedis,
+					&strerr, session.UserId.String(), traceId)
+				sst.audit.Log(ctx, event)
+
+			}
+
+			return custerr.ErrSessionAlredyExist
 		}
 
 		event := dm.NewSuccessEvent(dm.EventRegistrationSessionUserSuccess, dm.EventPlaceRedis,
@@ -217,7 +239,7 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 	return result, nil
 }
 
-func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UUID, refreshToken string) (*dm.Session, error) {
+func (sst *SessionStore) GetSessionByFamilyId(ctx context.Context, userId uuid.UUID, familyId uuid.UUID) (*dm.Session, error) {
 
 	traceId, ok := ctx.Value(dm.TraceKey).(string)
 	if !ok {
@@ -229,8 +251,8 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UU
 		geterr.Fields = append(geterr.Fields, FieldUserId)
 	}
 
-	if len(refreshToken) == 0 {
-		geterr.Fields = append(geterr.Fields, "refresh_token")
+	if familyId == uuid.Nil() {
+		geterr.Fields = append(geterr.Fields, "family_id")
 	}
 
 	if len(geterr.Fields) != 0 {
@@ -238,8 +260,8 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UU
 	}
 
 	hexid := hex.EncodeToString(userId[:])
-	tokenHash := hashSumFromRefreshToken(refreshToken)
-	hashRefresh := makeKey(RefreshKey, hexid, tokenHash)
+	hexFamilyId := hex.EncodeToString(familyId[:])
+	hashRefresh := makeKey(RefreshKey, hexid, hexFamilyId)
 
 	var session *dm.Session
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
@@ -284,6 +306,8 @@ func (sst *SessionStore) GetSessionByRefresh(ctx context.Context, userId uuid.UU
 	return session, nil
 }
 
+// FORDEL
+// The token is no longer stored in the session, only the version
 func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, oldToken string, newToken string) error {
 
 	traceId, ok := ctx.Value(dm.TraceKey).(string)
@@ -347,6 +371,12 @@ func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, o
 
 	return err
 }
+
+// TODO
+// add new function for update version
+
+// TODO
+// add new function for make grace periodic on 30 sec ttl
 
 func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 
@@ -412,7 +442,7 @@ func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, refresh string) error {
+func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, familyId uuid.UUID) error {
 
 	traceId, ok := ctx.Value(dm.TraceKey).(string)
 	if !ok {
@@ -424,7 +454,7 @@ func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, refr
 		geterr.Fields = append(geterr.Fields, FieldUserId)
 	}
 
-	if len(refresh) == 0 {
+	if familyId == uuid.Nil() {
 		geterr.Fields = append(geterr.Fields, "refresh_token")
 	}
 
@@ -435,15 +465,15 @@ func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, refr
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
 		hexid := hex.EncodeToString(id[:])
-		hashRefresh := hashSumFromRefreshToken(refresh)
-		hkey := makeKey(RefreshKey, hexid, hashRefresh)
-		keyWithUser := makeKey(SessionKey, hexid, hashRefresh)
+		hexFamilyId := hex.EncodeToString(familyId[:])
+		hkey := makeKey(RefreshKey, hexid, hexFamilyId)
+		keyWithUser := makeKey(SessionKey, hexid, hexFamilyId)
 
 		qnty, err := client.Del(ctx, keyWithUser, hkey).Result()
 		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis, &strerr,
-				hashRefresh, traceId)
+				hexFamilyId, traceId)
 			sst.audit.Log(ctx, event)
 			return err
 		}
@@ -452,12 +482,12 @@ func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, refr
 		if qnty != 2 {
 			strerr := custerr.ErrNotFound.Error()
 			event := dm.NewFailedEvent(dm.EventDeleteSessionFailed, dm.EventPlaceRedis, &strerr,
-				hashRefresh, traceId)
+				hexFamilyId, traceId)
 			sst.audit.Log(ctx, event)
 			return custerr.ErrNotFound
 		}
 
-		event := dm.NewSuccessEvent(dm.EventDeleteSessionSuccess, dm.EventPlaceRedis, hashRefresh, traceId)
+		event := dm.NewSuccessEvent(dm.EventDeleteSessionSuccess, dm.EventPlaceRedis, hexFamilyId, traceId)
 		sst.audit.Log(ctx, event)
 
 		return nil

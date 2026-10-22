@@ -1,7 +1,6 @@
 package util
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -28,7 +27,6 @@ func loadFromPar() (string, error) {
 
 	for {
 		possible := filepath.Join(path, ".env")
-		fmt.Printf("%v\n", possible)
 		if _, err := os.Stat(possible); err == nil {
 			return possible, nil
 		}
@@ -36,7 +34,7 @@ func loadFromPar() (string, error) {
 		parent := filepath.Dir(path)
 
 		if path == parent {
-			return  "", os.ErrNotExist
+			return "", os.ErrNotExist
 		}
 
 		path = parent
