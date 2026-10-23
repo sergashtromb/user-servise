@@ -8,7 +8,7 @@
 -- arguments:
 -- ttl
 -- <hashNewKey>
-
+-- FORDEL non actual
 local old_key = KEYS[1]
 local old_key_with_user = KEYS[2] 
 local new_key = KEYS[3] 

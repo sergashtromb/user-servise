@@ -27,10 +27,11 @@ type UserOpt struct {
 }
 
 type Session struct {
-	UserId    uuid.UUID
-	DeviceId  string
-	Ip        string
-	Agent     string
-	CreatedAt time.Time
-	Version   string
+	UserId     uuid.UUID
+	DeviceId   string
+	Ip         string
+	Agent      string
+	CreatedAt  time.Time
+	Version    string
+	LastUpdate time.Time
 }

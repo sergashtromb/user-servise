@@ -62,7 +62,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 		},
 	}
 
-	table := []struct {
+	_ = []struct {
 		Name               string
 		Comm               string
 		IsError            bool

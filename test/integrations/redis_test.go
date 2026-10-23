@@ -55,21 +55,23 @@ func TestRegistrationSessionInRedis(t *testing.T) {
 	}
 
 	fullSession := domain.Session{
-		UserId:    uuid.NewV7(),
-		DeviceId:  "12345",
-		Ip:        "1.1.1.1",
-		Agent:     "chrome win 10",
-		CreatedAt: time.Now(),
-		Version:   "jtw-1",
+		UserId:     uuid.NewV7(),
+		DeviceId:   "12345",
+		Ip:         "1.1.1.1",
+		Agent:      "chrome win 10",
+		CreatedAt:  time.Now(),
+		Version:    "jtw-1",
+		LastUpdate: time.Now(),
 	}
 
 	emptySession := domain.Session{
-		UserId:    uuid.Nil(),
-		DeviceId:  "",
-		Ip:        "",
-		Agent:     "",
-		CreatedAt: time.Now(),
-		Version:   "jtw-1",
+		UserId:     uuid.Nil(),
+		DeviceId:   "",
+		Ip:         "",
+		Agent:      "",
+		CreatedAt:  time.Now(),
+		Version:    "jtw-1",
+		LastUpdate: time.Now(),
 	}
 
 	familyId1 := uuid.NewV7()
@@ -168,6 +170,18 @@ func TestRegistrationSessionInRedis(t *testing.T) {
 						dataSession.CreatedAt = time.Unix(createdAtInt, 0)
 					}
 
+					lastUpdateStr, ok := data["last_update"]
+					if !ok {
+						t.Errorf("fail get last_update")
+					} else {
+						lastUpdateInt, err := strconv.ParseInt(lastUpdateStr, 10, 64)
+						if err != nil {
+							t.Errorf("fail convert last_update string to int64 err:%v", err)
+						} else {
+							dataSession.LastUpdate = time.Unix(lastUpdateInt, 0)
+						}
+					}
+
 					if fullSession.UserId != dataSession.UserId || fullSession.DeviceId != dataSession.DeviceId ||
 						fullSession.Agent != dataSession.Agent || fullSession.Ip != dataSession.Ip ||
 						!fullSession.CreatedAt.Truncate(time.Second).Equal(dataSession.CreatedAt) {
@@ -221,12 +235,13 @@ func TestRegistrationSessionInRedis(t *testing.T) {
 					hexFamilyId)
 
 				data := map[string]interface{}{
-					"user_id":    hex.EncodeToString(fullSession.UserId[:]),
-					"device_id":  fullSession.DeviceId,
-					"agent":      fullSession.Agent,
-					"ip":         fullSession.Ip,
-					"created_at": fullSession.CreatedAt.Unix(),
-					"version":    fullSession.Version,
+					"user_id":     hex.EncodeToString(fullSession.UserId[:]),
+					"device_id":   fullSession.DeviceId,
+					"agent":       fullSession.Agent,
+					"ip":          fullSession.Ip,
+					"created_at":  fullSession.CreatedAt.Unix(),
+					"version":     fullSession.Version,
+					"last_update": fullSession.LastUpdate.Unix(),
 				}
 
 				_, err := client.HSet(context.TODO(), sessionKey, data).Result()
@@ -318,6 +333,18 @@ func TestRegistrationSessionInRedis(t *testing.T) {
 						}
 
 						dataSession.CreatedAt = time.Unix(createdAtInt, 0)
+					}
+
+					lastUpdateStr, ok := data["last_update"]
+					if !ok {
+						t.Errorf("fail get last_update")
+					} else {
+						lastUpdateInt, err := strconv.ParseInt(lastUpdateStr, 10, 64)
+						if err != nil {
+							t.Errorf("fail convert last_update string to int64 err:%v", err)
+						} else {
+							dataSession.LastUpdate = time.Unix(lastUpdateInt, 0)
+						}
 					}
 
 					if fullSession.UserId != dataSession.UserId || fullSession.DeviceId != dataSession.DeviceId ||
@@ -421,12 +448,13 @@ func TestGetSessionByFamilyId(t *testing.T) {
 	}
 
 	fullSession := domain.Session{
-		UserId:    uuid.NewV7(),
-		DeviceId:  "12345",
-		Ip:        "1.1.1.1",
-		Agent:     "chrome win 10",
-		CreatedAt: time.Now(),
-		Version:   "jtw-1",
+		UserId:     uuid.NewV7(),
+		DeviceId:   "12345",
+		Ip:         "1.1.1.1",
+		Agent:      "chrome win 10",
+		CreatedAt:  time.Now(),
+		Version:    "jtw-1",
+		LastUpdate: time.Now(),
 	}
 
 	existfamilyId := uuid.NewV7()
@@ -460,12 +488,13 @@ func TestGetSessionByFamilyId(t *testing.T) {
 					hexFamilyId)
 
 				data := map[string]interface{}{
-					"user_id":    hex.EncodeToString(fullSession.UserId[:]),
-					"device_id":  fullSession.DeviceId,
-					"agent":      fullSession.Agent,
-					"ip":         fullSession.Ip,
-					"created_at": fullSession.CreatedAt.Unix(),
-					"version":    fullSession.Version,
+					"user_id":     hex.EncodeToString(fullSession.UserId[:]),
+					"device_id":   fullSession.DeviceId,
+					"agent":       fullSession.Agent,
+					"ip":          fullSession.Ip,
+					"created_at":  fullSession.CreatedAt.Unix(),
+					"version":     fullSession.Version,
+					"last_update": fullSession.LastUpdate.Unix(),
 				}
 
 				_, err := client.HSet(context.TODO(), sessionKey, data).Result()
@@ -509,12 +538,13 @@ func TestGetSessionByFamilyId(t *testing.T) {
 					hexFamilyId)
 
 				data := map[string]interface{}{
-					"user_id":    hex.EncodeToString(fullSession.UserId[:]),
-					"device_id":  fullSession.DeviceId,
-					"agent":      fullSession.Agent,
-					"ip":         fullSession.Ip,
-					"created_at": fullSession.CreatedAt.Unix(),
-					"version":    fullSession.Version,
+					"user_id":     hex.EncodeToString(fullSession.UserId[:]),
+					"device_id":   fullSession.DeviceId,
+					"agent":       fullSession.Agent,
+					"ip":          fullSession.Ip,
+					"created_at":  fullSession.CreatedAt.Unix(),
+					"version":     fullSession.Version,
+					"last_update": fullSession.LastUpdate.Unix(),
 				}
 
 				_, err := client.HSet(context.TODO(), sessionKey, data).Result()
@@ -625,21 +655,23 @@ func TestGetAllSession(t *testing.T) {
 	familyId2 := uuid.NewV7()
 
 	session1 := domain.Session{
-		UserId:    userId1,
-		DeviceId:  "device-1",
-		Ip:        "192.168.1.1",
-		Agent:     "chrome win 10",
-		CreatedAt: time.Now().Truncate(time.Second),
-		Version:   "jwt-1",
+		UserId:     userId1,
+		DeviceId:   "device-1",
+		Ip:         "192.168.1.1",
+		Agent:      "chrome win 10",
+		CreatedAt:  time.Now().Truncate(time.Second),
+		Version:    "jwt-1",
+		LastUpdate: time.Now().Truncate(time.Second),
 	}
 
 	session2 := domain.Session{
-		UserId:    userId1,
-		DeviceId:  "device-2",
-		Ip:        "192.168.1.2",
-		Agent:     "firefox macos",
-		CreatedAt: time.Now().Truncate(time.Second).Add(-1 * time.Hour),
-		Version:   "jwt-2",
+		UserId:     userId1,
+		DeviceId:   "device-2",
+		Ip:         "192.168.1.2",
+		Agent:      "firefox macos",
+		CreatedAt:  time.Now().Truncate(time.Second).Add(-1 * time.Hour),
+		Version:    "jwt-2",
+		LastUpdate: time.Now().Truncate(time.Second).Add(-1 * time.Hour),
 	}
 
 	//session3 := domain.Session{
@@ -680,12 +712,13 @@ func TestGetAllSession(t *testing.T) {
 				sessionKey1 := fmt.Sprintf("session:{%v}:user:%v", hexUserId, hexFamId1)
 
 				data1 := map[string]interface{}{
-					"user_id":    hex.EncodeToString(session1.UserId[:]),
-					"device_id":  session1.DeviceId,
-					"agent":      session1.Agent,
-					"ip":         session1.Ip,
-					"created_at": session1.CreatedAt.Unix(),
-					"version":    session1.Version,
+					"user_id":     hex.EncodeToString(session1.UserId[:]),
+					"device_id":   session1.DeviceId,
+					"agent":       session1.Agent,
+					"ip":          session1.Ip,
+					"created_at":  session1.CreatedAt.Unix(),
+					"version":     session1.Version,
+					"last_update": session1.LastUpdate.Unix(),
 				}
 
 				_, err := client.HSet(context.TODO(), refreshKey1, data1).Result()
@@ -710,12 +743,13 @@ func TestGetAllSession(t *testing.T) {
 				sessionKey2 := fmt.Sprintf("session:{%v}:user:%v", hexUserId, hexFamId2)
 
 				data2 := map[string]interface{}{
-					"user_id":    hex.EncodeToString(session2.UserId[:]),
-					"device_id":  session2.DeviceId,
-					"agent":      session2.Agent,
-					"ip":         session2.Ip,
-					"created_at": session2.CreatedAt.Unix(),
-					"version":    session2.Version,
+					"user_id":     hex.EncodeToString(session2.UserId[:]),
+					"device_id":   session2.DeviceId,
+					"agent":       session2.Agent,
+					"ip":          session2.Ip,
+					"created_at":  session2.CreatedAt.Unix(),
+					"version":     session2.Version,
+					"last_update": session2.LastUpdate.Unix(),
 				}
 
 				_, err = client.HSet(context.TODO(), refreshKey2, data2).Result()
@@ -888,21 +922,23 @@ func TestDeleteAll(t *testing.T) {
 	familyId2 := uuid.NewV7()
 
 	session1 := domain.Session{
-		UserId:    userId1,
-		DeviceId:  "device-1",
-		Ip:        "192.168.1.1",
-		Agent:     "chrome win 10",
-		CreatedAt: time.Now().Truncate(time.Second),
-		Version:   "jwt-1",
+		UserId:     userId1,
+		DeviceId:   "device-1",
+		Ip:         "192.168.1.1",
+		Agent:      "chrome win 10",
+		CreatedAt:  time.Now().Truncate(time.Second),
+		Version:    "jwt-1",
+		LastUpdate: time.Now().Truncate(time.Second),
 	}
 
 	session2 := domain.Session{
-		UserId:    userId1,
-		DeviceId:  "device-2",
-		Ip:        "192.168.1.2",
-		Agent:     "firefox macos",
-		CreatedAt: time.Now().Truncate(time.Second).Add(-1 * time.Hour),
-		Version:   "jwt-2",
+		UserId:     userId1,
+		DeviceId:   "device-2",
+		Ip:         "192.168.1.2",
+		Agent:      "firefox macos",
+		CreatedAt:  time.Now().Truncate(time.Second).Add(-1 * time.Hour),
+		Version:    "jwt-2",
+		LastUpdate: time.Now().Truncate(time.Second).Add(-1 * time.Hour),
 	}
 
 	table := map[string]struct {
@@ -916,11 +952,11 @@ func TestDeleteAll(t *testing.T) {
 		fnCheckAfter    func()
 	}{
 		"correct_request": {
-			IsError:       false,
-			Err:           nil,
-			UserId:        userId1,
+			IsError:         false,
+			Err:             nil,
+			UserId:          userId1,
 			SessionsToSetup: []domain.Session{session1, session2},
-			FamilyIds:     []uuid.UUID{familyId1, familyId2},
+			FamilyIds:       []uuid.UUID{familyId1, familyId2},
 			fnReady: func() {
 				hexUserId := hex.EncodeToString(userId1[:])
 
@@ -932,12 +968,13 @@ func TestDeleteAll(t *testing.T) {
 				sessionKey1 := fmt.Sprintf("session:{%v}:user:%v", hexUserId, hexFamId1)
 
 				data1 := map[string]interface{}{
-					"user_id":    hex.EncodeToString(session1.UserId[:]),
-					"device_id":  session1.DeviceId,
-					"agent":      session1.Agent,
-					"ip":         session1.Ip,
-					"created_at": session1.CreatedAt.Unix(),
-					"version":    session1.Version,
+					"user_id":     hex.EncodeToString(session1.UserId[:]),
+					"device_id":   session1.DeviceId,
+					"agent":       session1.Agent,
+					"ip":          session1.Ip,
+					"created_at":  session1.CreatedAt.Unix(),
+					"version":     session1.Version,
+					"last_update": session1.LastUpdate.Unix(),
 				}
 
 				_, err := client.HSet(context.TODO(), refreshKey1, data1).Result()
@@ -962,12 +999,13 @@ func TestDeleteAll(t *testing.T) {
 				sessionKey2 := fmt.Sprintf("session:{%v}:user:%v", hexUserId, hexFamId2)
 
 				data2 := map[string]interface{}{
-					"user_id":    hex.EncodeToString(session2.UserId[:]),
-					"device_id":  session2.DeviceId,
-					"agent":      session2.Agent,
-					"ip":         session2.Ip,
-					"created_at": session2.CreatedAt.Unix(),
-					"version":    session2.Version,
+					"user_id":     hex.EncodeToString(session2.UserId[:]),
+					"device_id":   session2.DeviceId,
+					"agent":       session2.Agent,
+					"ip":          session2.Ip,
+					"created_at":  session2.CreatedAt.Unix(),
+					"version":     session2.Version,
+					"last_update": session2.LastUpdate.Unix(),
 				}
 
 				_, err = client.HSet(context.TODO(), refreshKey2, data2).Result()
@@ -1180,12 +1218,13 @@ func TestDeleteByRefresh(t *testing.T) {
 				sessionKey1 := fmt.Sprintf("session:{%v}:user:%v", hexUserId, hexFamId1)
 
 				data1 := map[string]interface{}{
-					"user_id":    hex.EncodeToString(session1.UserId[:]),
-					"device_id":  session1.DeviceId,
-					"agent":      session1.Agent,
-					"ip":         session1.Ip,
-					"created_at": session1.CreatedAt.Unix(),
-					"version":    session1.Version,
+					"user_id":     hex.EncodeToString(session1.UserId[:]),
+					"device_id":   session1.DeviceId,
+					"agent":       session1.Agent,
+					"ip":          session1.Ip,
+					"created_at":  session1.CreatedAt.Unix(),
+					"version":     session1.Version,
+					"last_update": session1.LastUpdate.Unix(),
 				}
 
 				_, err := client.HSet(context.TODO(), refreshKey1, data1).Result()
@@ -1210,12 +1249,13 @@ func TestDeleteByRefresh(t *testing.T) {
 				sessionKey2 := fmt.Sprintf("session:{%v}:user:%v", hexUserId, hexFamId2)
 
 				data2 := map[string]interface{}{
-					"user_id":    hex.EncodeToString(session1.UserId[:]),
-					"device_id":  "device-2",
-					"agent":      "firefox macos",
-					"ip":         "192.168.1.2",
-					"created_at": session1.CreatedAt.Unix(),
-					"version":    "jwt-2",
+					"user_id":     hex.EncodeToString(session1.UserId[:]),
+					"device_id":   "device-2",
+					"agent":       "firefox macos",
+					"ip":          "192.168.1.2",
+					"created_at":  session1.CreatedAt.Unix(),
+					"version":     "jwt-2",
+					"last_update": session1.LastUpdate.Unix(),
 				}
 
 				_, err = client.HSet(context.TODO(), refreshKey2, data2).Result()
@@ -1358,6 +1398,160 @@ func TestDeleteByRefresh(t *testing.T) {
 			val.fnCleanUp()
 		})
 	}
+}
+
+// SPEC
+//	SessionStore:
+//		UpdateVersion - метод поднимает версию сессии и возвращает ее
+//			Args - 	ctx - контекст выполнения
+// 					userId - uuid.UUID айдишник пользователя
+// 					familyId - uuid.UUID айдишник семейства refresh токенов
+//			Return - (string, error)
+// 					(string, nil) - если версия успешно поднята, вернет новую сессию
+// 					("", error) - если сессия не найдена (ErrNotFound)
+// 					("", error) - если между текущим временем и временем последнего обновления меньше времени
+// 									 чем время жизни access токена (ErrSuspiciousRefreshRate)
+// 					("", error) - если не корректно заполнены аргументы (uuid.Nil)
+//					("", error) - если упал редис
+//			Tests:
+//					correct_request - корректный запрос с существующей сессией, у сессии должна быть обновлена версия
+//					session_not_found - попытка обновить версию несуществующую сессии, должна вернуться ошибка ErrNotFound
+//					suspicious_refresh_rate - попытка обновить только что обновленную сессию ErrSuspiciousRefreshRate
+//					invalid_args - попытка удалить сессию с uuid.Nil, должна вернуться ошибка ErrBadArgs
+//
+
+func TestUpdateVersion(t *testing.T) {
+
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
+	sessionStore, err := loadAndGetSessionStore()
+	if err != nil {
+		t.Fatalf("fail load session store, err:%v", err)
+	}
+
+	client, err := loadRedisClient()
+	if err != nil {
+		t.Fatalf("dont load redis err:%v", err)
+	}
+
+	userId1 := uuid.NewV7()
+	familyId1 := uuid.NewV7()
+	familyId2 := uuid.NewV7()
+
+	session1 := domain.Session{
+		UserId:     userId1,
+		DeviceId:   "device-1",
+		Ip:         "192.168.1.1",
+		Agent:      "chrome win 10",
+		CreatedAt:  time.Now().Add(-32 * time.Minute),
+		Version:    "jwt-2",
+		LastUpdate: time.Now().Add(-16 * time.Minute),
+	}
+
+	session2 := domain.Session{
+		UserId:     uuid.NewV7(),
+		DeviceId:   "device-34",
+		Ip:         "192.155.1.1",
+		Agent:      "safari ios",
+		CreatedAt:  time.Now().Add(-48 * time.Minute),
+		Version:    "jwt-3",
+		LastUpdate: time.Now().Add(-16 * time.Minute),
+	}
+
+	table := map[string]struct {
+		IsError   bool
+		Err       *repoerrors.RepoError
+		UserId    uuid.UUID
+		FamilyId  uuid.UUID
+		fnCleanUp func()
+		fnReady   func()
+		fnCheck   func()
+	}{
+		"correct_request": {
+			IsError:  false,
+			Err:      nil,
+			UserId:   userId1,
+			FamilyId: familyId1,
+			fnCleanUp: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnReady: func() {
+
+				hexUserId1 := hex.EncodeToString(userId1[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+				sessionKey1 := fmt.Sprintf("session:{%v}:user:%v", hexUserId1, hexFamilyId1)
+
+				_, err := client.HSet(context.TODO(), refreshKey1,
+					map[string]interface{}{
+						"user_id":     hexUserId1,
+						"device_id":   session1.DeviceId,
+						"ip":          session1.Ip,
+						"agent":       session1.Agent,
+						"created_at":  session1.CreatedAt.Unix(),
+						"version":     session1.Version,
+						"last_update": session1.LastUpdate.Unix(),
+					}).Result()
+				if err != nil {
+					t.Errorf("fail ready session err:%v", err)
+					return
+				}
+
+				_, err = client.Expire(context.TODO(), refreshKey1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready exp session err:%v", err)
+					return
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey1, hexFamilyId1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready session uniq key err:%v", err)
+					return
+				}
+
+				hexUserId2 := hex.EncodeToString(session2.UserId[:])
+				hexFamilyId2 := hex.EncodeToString(familyId2[:])
+				refreshKey2 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId2, hexFamilyId2)
+				sessionKey2 := fmt.Sprintf("session:{%v}:user:%v", hexUserId2, hexFamilyId2)
+
+				_, err = client.HSet(context.TODO(), refreshKey2,
+					map[string]interface{}{
+						"user_id":     hexUserId2,
+						"device_id":   session2.DeviceId,
+						"ip":          session2.Ip,
+						"agent":       session2.Agent,
+						"created_at":  session2.CreatedAt.Unix(),
+						"version":     session2.Version,
+						"last_update": session2.LastUpdate.Unix(),
+					}).Result()
+				if err != nil {
+					t.Errorf("fail ready session err:%v", err)
+					return
+				}
+
+				_, err = client.Expire(context.TODO(), refreshKey2, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready exp session err:%v", err)
+					return
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey2, hexFamilyId2, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready session uniq key err:%v", err)
+					return
+				}
+
+			},
+			fnCheck: func() {
+
+			},
+		},
+	}
+
 }
 
 func loadRedisClient() (*redis.Client, error) {

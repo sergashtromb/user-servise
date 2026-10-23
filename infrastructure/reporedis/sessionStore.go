@@ -11,7 +11,6 @@ import (
 	"time"
 	dm "user_service/domain"
 	"user_service/infrastructure/reporedis/custerr"
-	"user_service/infrastructure/reporedis/scripts"
 	"uuid"
 
 	"github.com/redis/go-redis/v9"
@@ -306,77 +305,18 @@ func (sst *SessionStore) GetSessionByFamilyId(ctx context.Context, userId uuid.U
 	return session, nil
 }
 
-// FORDEL
-// The token is no longer stored in the session, only the version
-func (sst *SessionStore) UpdateRefreshToken(ctx context.Context, id uuid.UUID, oldToken string, newToken string) error {
-
-	traceId, ok := ctx.Value(dm.TraceKey).(string)
-	if !ok {
-		traceId = ""
-	}
-
-	geterr := custerr.ErrBadArgs.Clone()
-	if id == uuid.Nil() {
-		geterr.Fields = append(geterr.Fields, FieldUserId)
-	}
-
-	if len(oldToken) == 0 {
-		geterr.Fields = append(geterr.Fields, "old_token")
-	}
-
-	if len(newToken) == 0 {
-		geterr.Fields = append(geterr.Fields, "new_token")
-	}
-
-	if len(geterr.Fields) != 0 {
-		return geterr
-	}
-
-	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
-
-		hashOld := hashSumFromRefreshToken(oldToken)
-		hashNew := hashSumFromRefreshToken(newToken)
-		hexid := hex.EncodeToString(id[:])
-
-		refreshOldKey := makeKey(RefreshKey, hexid, hashOld)
-		refreshNewKey := makeKey(RefreshKey, hexid, hashNew)
-
-		sessionOldKey := makeKey(SessionKey, hexid, hashOld)
-		sessionNewKey := makeKey(SessionKey, hexid, hashNew)
-
-		res, err := scripts.UpdateRefreshToken.Run(ctx, client, []string{
-			refreshOldKey,
-			sessionOldKey,
-			refreshNewKey,
-			sessionNewKey,
-		}, int(sst.ttl.Seconds()), hashNew).Int()
-
-		if err != nil {
-			strerr := err.Error()
-			event := dm.NewFailedEvent(dm.EventUpdateRefreshTokenFailed, dm.EventPlaceRedis,
-				&strerr, hexid, traceId)
-			sst.audit.Log(ctx, event)
-			return err
-		}
-
-		if res == 0 {
-			return custerr.ErrNotFound
-		}
-
-		event := dm.NewSuccessEvent(dm.EventUpdateRefreshTokenSuccess, dm.EventPlaceRedis, hexid, traceId)
-		sst.audit.Log(ctx, event)
-
-		return nil
-	})
-
-	return err
-}
-
 // TODO
 // add new function for update version
 
+func (sst *SessionStore) UpdateVersion(ctx context.Context, userId uuid.UUID, familyId uuid.UUID) (string, error) {
+	return "", nil
+}
+
 // TODO
 // add new function for make grace periodic on 30 sec ttl
+
+// TODO
+// add new function for update ip adress
 
 func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 
@@ -498,12 +438,13 @@ func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, fami
 }
 
 type Session struct {
-	UserId    string // user_id hex string
-	DeviceId  string
-	Ip        string
-	Agent     string
-	CreatedAt int64
-	Version   string
+	UserId     string // user_id hex string
+	DeviceId   string
+	Ip         string
+	Agent      string
+	CreatedAt  int64
+	Version    string
+	LastUpdate int64
 }
 
 func (ss *Session) ToMap() map[string]interface{} {
@@ -516,6 +457,7 @@ func (ss *Session) ToMap() map[string]interface{} {
 	data[FieldAgent] = ss.Agent
 	data[FieldCreatedAt] = ss.CreatedAt
 	data[FieldVersion] = ss.Version
+	data[FieldLastUpdate] = ss.LastUpdate
 
 	return data
 }
@@ -523,29 +465,32 @@ func (ss *Session) ToMap() map[string]interface{} {
 func (ss *Session) ToDomain() (*dm.Session, error) {
 
 	createdAt := time.Unix(ss.CreatedAt, 0)
+	lastUpdate := time.Unix(ss.LastUpdate, 0)
 	id, err := hexToUuid(ss.UserId)
 	if err != nil {
 		return nil, err
 	}
 
 	return &dm.Session{
-		UserId:    id,
-		DeviceId:  ss.DeviceId,
-		Ip:        ss.Ip,
-		Agent:     ss.Agent,
-		CreatedAt: createdAt,
-		Version:   ss.Version,
+		UserId:     id,
+		DeviceId:   ss.DeviceId,
+		Ip:         ss.Ip,
+		Agent:      ss.Agent,
+		CreatedAt:  createdAt,
+		Version:    ss.Version,
+		LastUpdate: lastUpdate,
 	}, nil
 }
 
 func SessionFromDomainSession(ss *dm.Session) *Session {
 	return &Session{
-		UserId:    hex.EncodeToString(ss.UserId[:]),
-		DeviceId:  ss.DeviceId,
-		Ip:        ss.Ip,
-		Agent:     ss.Agent,
-		CreatedAt: ss.CreatedAt.Unix(),
-		Version:   ss.Version,
+		UserId:     hex.EncodeToString(ss.UserId[:]),
+		DeviceId:   ss.DeviceId,
+		Ip:         ss.Ip,
+		Agent:      ss.Agent,
+		CreatedAt:  ss.CreatedAt.Unix(),
+		Version:    ss.Version,
+		LastUpdate: ss.LastUpdate.Unix(),
 	}
 }
 
@@ -565,6 +510,13 @@ func SessionFromMapString(data map[string]string) (*Session, error) {
 	}
 
 	ss.CreatedAt = intCreatedAt
+
+	intLastUpdate, err := strconv.ParseInt(data[FieldLastUpdate], 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	ss.LastUpdate = intLastUpdate
 
 	return &ss, nil
 }
