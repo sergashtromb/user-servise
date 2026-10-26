@@ -19,3 +19,11 @@ const (
 	FieldVersion    = "version"
 	FieldLastUpdate = "last_update"
 )
+
+// err lua conts
+const (
+	ErrLuaBadArgs               = "bad args"
+	ErrLuaSessionNotFound       = "session not found"
+	ErrLuaSuspiciousRefreshRate = "suspicious refresh rate"
+	ErrLuaBadVersion            = "bad version"
+)

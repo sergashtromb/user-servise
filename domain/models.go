@@ -35,3 +35,9 @@ type Session struct {
 	Version    string
 	LastUpdate time.Time
 }
+
+type GracePeriodic struct {
+	Version string
+	Access  string // hash from real tokens
+	Refresh string
+}

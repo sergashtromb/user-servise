@@ -12,7 +12,9 @@ var luaScripts embed.FS
 
 var (
 	// TEST write test for check invalid ttl, should return error
+	// FORDEL
 	UpdateRefreshToken = redis.NewScript(loadScript("UpdateRefreshToken.lua"))
+	UpdateVersion      = redis.NewScript(loadScript("UpdateVersion.lua"))
 )
 
 func loadScript(name string) string {

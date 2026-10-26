@@ -1401,25 +1401,25 @@ func TestDeleteByRefresh(t *testing.T) {
 }
 
 // SPEC
+//
 //	SessionStore:
 //		UpdateVersion - метод поднимает версию сессии и возвращает ее
 //			Args - 	ctx - контекст выполнения
-// 					userId - uuid.UUID айдишник пользователя
-// 					familyId - uuid.UUID айдишник семейства refresh токенов
+//					userId - uuid.UUID айдишник пользователя
+//					familyId - uuid.UUID айдишник семейства refresh токенов
 //			Return - (string, error)
-// 					(string, nil) - если версия успешно поднята, вернет новую сессию
-// 					("", error) - если сессия не найдена (ErrNotFound)
-// 					("", error) - если между текущим временем и временем последнего обновления меньше времени
-// 									 чем время жизни access токена (ErrSuspiciousRefreshRate)
-// 					("", error) - если не корректно заполнены аргументы (uuid.Nil)
-//					("", error) - если упал редис
+//					(string, nil) - если версия успешно поднята, вернет новую сессию
+//					("", error) - если сессия не найдена (ErrNotFound)
+//					("", error) - если между текущим временем и временем последнего обновления меньше времени
+//									 чем время жизни access токена (ErrSuspiciousRefreshRate)
+//					("", error) - если не корректно заполнены аргументы (uuid.Nil)
 //			Tests:
 //					correct_request - корректный запрос с существующей сессией, у сессии должна быть обновлена версия
 //					session_not_found - попытка обновить версию несуществующую сессии, должна вернуться ошибка ErrNotFound
 //					suspicious_refresh_rate - попытка обновить только что обновленную сессию ErrSuspiciousRefreshRate
 //					invalid_args - попытка удалить сессию с uuid.Nil, должна вернуться ошибка ErrBadArgs
 //
-
+// FORDEL
 func TestUpdateVersion(t *testing.T) {
 
 	cm := config.NewConfigManager()
@@ -1438,6 +1438,8 @@ func TestUpdateVersion(t *testing.T) {
 	userId1 := uuid.NewV7()
 	familyId1 := uuid.NewV7()
 	familyId2 := uuid.NewV7()
+	familyId3 := uuid.NewV7()
+	trueVersion1 := "jwt-3"
 
 	session1 := domain.Session{
 		UserId:     userId1,
@@ -1455,8 +1457,18 @@ func TestUpdateVersion(t *testing.T) {
 		Ip:         "192.155.1.1",
 		Agent:      "safari ios",
 		CreatedAt:  time.Now().Add(-48 * time.Minute),
-		Version:    "jwt-3",
+		Version:    "jwt-4",
 		LastUpdate: time.Now().Add(-16 * time.Minute),
+	}
+
+	session3 := domain.Session{
+		UserId:     uuid.NewV7(),
+		DeviceId:   "device-123",
+		Ip:         "192.158.1.1",
+		Agent:      "mozila android",
+		CreatedAt:  time.Now().Add(-48 * time.Minute),
+		Version:    "jwt-2",
+		LastUpdate: time.Now(),
 	}
 
 	table := map[string]struct {
@@ -1464,6 +1476,7 @@ func TestUpdateVersion(t *testing.T) {
 		Err       *repoerrors.RepoError
 		UserId    uuid.UUID
 		FamilyId  uuid.UUID
+		Ver       string
 		fnCleanUp func()
 		fnReady   func()
 		fnCheck   func()
@@ -1473,6 +1486,7 @@ func TestUpdateVersion(t *testing.T) {
 			Err:      nil,
 			UserId:   userId1,
 			FamilyId: familyId1,
+			Ver:      trueVersion1,
 			fnCleanUp: func() {
 				_, err := client.FlushDB(context.TODO()).Result()
 				if err != nil {
@@ -1548,8 +1562,677 @@ func TestUpdateVersion(t *testing.T) {
 			},
 			fnCheck: func() {
 
+				hexUserId1 := hex.EncodeToString(userId1[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+
+				data, err := client.HGet(context.TODO(), refreshKey1, "version").Result()
+				if err != nil {
+					t.Errorf("fail get version err:%v", err)
+				}
+
+				if data != trueVersion1 {
+					t.Errorf("fail true version is not equal want: %v have %v", trueVersion1, data)
+				}
+
+				hexUserId2 := hex.EncodeToString(session2.UserId[:])
+				hexFamilyId2 := hex.EncodeToString(familyId2[:])
+				refreshKey2 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId2, hexFamilyId2)
+
+				ver2, err := client.HGet(context.TODO(), refreshKey2, "version").Result()
+				if err != nil {
+					t.Errorf("fail get second session field version err:%v", err)
+				}
+
+				if ver2 != session2.Version {
+					t.Errorf("fail version session 2 dont be changed")
+				}
 			},
 		},
+		"session_not_found": {
+			IsError:  true,
+			Err:      custerr.ErrNotFound,
+			UserId:   userId1,
+			FamilyId: familyId1,
+			fnCleanUp: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnReady: func() {
+
+				hexUserId2 := hex.EncodeToString(session2.UserId[:])
+				hexFamilyId2 := hex.EncodeToString(familyId2[:])
+				refreshKey2 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId2, hexFamilyId2)
+				sessionKey2 := fmt.Sprintf("session:{%v}:user:%v", hexUserId2, hexFamilyId2)
+
+				_, err = client.HSet(context.TODO(), refreshKey2,
+					map[string]interface{}{
+						"user_id":     hexUserId2,
+						"device_id":   session2.DeviceId,
+						"ip":          session2.Ip,
+						"agent":       session2.Agent,
+						"created_at":  session2.CreatedAt.Unix(),
+						"version":     session2.Version,
+						"last_update": session2.LastUpdate.Unix(),
+					}).Result()
+				if err != nil {
+					t.Errorf("fail ready session err:%v", err)
+					return
+				}
+
+				_, err = client.Expire(context.TODO(), refreshKey2, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready exp session err:%v", err)
+					return
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey2, hexFamilyId2, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready session uniq key err:%v", err)
+					return
+				}
+
+			},
+			fnCheck: func() {
+				hexUserId2 := hex.EncodeToString(session2.UserId[:])
+				hexFamilyId2 := hex.EncodeToString(familyId2[:])
+				refreshKey2 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId2, hexFamilyId2)
+
+				ver2, err := client.HGet(context.TODO(), refreshKey2, "version").Result()
+				if err != nil {
+					t.Errorf("fail get second session field version err:%v", err)
+				}
+
+				if ver2 != session2.Version {
+					t.Errorf("fail version session 2 dont be changed")
+				}
+			},
+		},
+		"suspicious_refresh_rate": {
+			IsError:  true,
+			Err:      custerr.ErrSuspiciousRefreshRate,
+			UserId:   session3.UserId,
+			FamilyId: familyId3,
+			fnCleanUp: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnReady: func() {
+
+				hexUserId3 := hex.EncodeToString(session3.UserId[:])
+				hexFamilyId3 := hex.EncodeToString(familyId3[:])
+				refreshKey3 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId3, hexFamilyId3)
+				sessionKey3 := fmt.Sprintf("session:{%v}:user:%v", hexUserId3, hexFamilyId3)
+
+				_, err = client.HSet(context.TODO(), refreshKey3,
+					map[string]interface{}{
+						"user_id":     hexUserId3,
+						"device_id":   session3.DeviceId,
+						"ip":          session3.Ip,
+						"agent":       session3.Agent,
+						"created_at":  session3.CreatedAt.Unix(),
+						"version":     session3.Version,
+						"last_update": session3.LastUpdate.Unix(),
+					}).Result()
+				if err != nil {
+					t.Errorf("fail ready session err:%v", err)
+					return
+				}
+
+				_, err = client.Expire(context.TODO(), refreshKey3, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready exp session err:%v", err)
+					return
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey3, hexFamilyId3, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready session uniq key err:%v", err)
+					return
+				}
+			},
+			fnCheck: func() {
+				hexUserId3 := hex.EncodeToString(session3.UserId[:])
+				hexFamilyId3 := hex.EncodeToString(familyId3[:])
+				refreshKey3 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId3, hexFamilyId3)
+
+				ver3, err := client.HGet(context.TODO(), refreshKey3, "version").Result()
+				if err != nil {
+					t.Errorf("fail get second session field version err:%v", err)
+				}
+
+				if ver3 != session3.Version {
+					t.Errorf("fail version session 2 dont be changed")
+				}
+			},
+		},
+		"bad_args": {
+			IsError:  true,
+			Err:      custerr.ErrBadArgs,
+			UserId:   uuid.Nil(),
+			FamilyId: uuid.Nil(),
+			fnCleanUp: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnReady: func() {
+				hexUserId1 := hex.EncodeToString(userId1[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+				sessionKey1 := fmt.Sprintf("session:{%v}:user:%v", hexUserId1, hexFamilyId1)
+
+				_, err := client.HSet(context.TODO(), refreshKey1,
+					map[string]interface{}{
+						"user_id":     hexUserId1,
+						"device_id":   session1.DeviceId,
+						"ip":          session1.Ip,
+						"agent":       session1.Agent,
+						"created_at":  session1.CreatedAt.Unix(),
+						"version":     session1.Version,
+						"last_update": session1.LastUpdate.Unix(),
+					}).Result()
+				if err != nil {
+					t.Errorf("fail ready session err:%v", err)
+					return
+				}
+
+				_, err = client.Expire(context.TODO(), refreshKey1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready exp session err:%v", err)
+					return
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey1, hexFamilyId1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready session uniq key err:%v", err)
+					return
+				}
+			},
+			fnCheck: func() {
+				hexUserId1 := hex.EncodeToString(session1.UserId[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+
+				ver1, err := client.HGet(context.TODO(), refreshKey1, "version").Result()
+				if err != nil {
+					t.Errorf("fail get second session field version err:%v", err)
+				}
+
+				if ver1 != session1.Version {
+					t.Errorf("fail version session 2 dont be changed")
+				}
+			},
+		},
+	}
+
+	for name, val := range table {
+		t.Run(name, func(t *testing.T) {
+
+			val.fnReady()
+
+			ver, err := sessionStore.UpdateVersion(context.TODO(), val.UserId, val.FamilyId)
+			if val.IsError {
+
+				if !val.Err.Is(err) {
+					t.Errorf("fail error dont equal want %v have %v", val.Err, err)
+				}
+
+			} else {
+				if err != nil {
+					t.Errorf("fail shouldnt return error err:%v", err)
+				}
+
+				if ver != val.Ver {
+					t.Errorf("fail version dotn equal want %v have %v", val.Ver, ver)
+				}
+
+			}
+
+			val.fnCheck()
+			val.fnCleanUp()
+
+		})
+	}
+
+}
+
+// SPEC
+//	SessionStore:
+//		CreateGracePeriodic - метод создает окно в кеше для обновления старого токена, окно живет 30 секунд,
+//						окно состоит из ключа: hex адишника пользователя и familyId
+//										значения: новый access и refresh token, Так же поднимает версию сессии
+//			Args - 	ctx - контекст выполнения
+// 					userId - uuid.UUID айдишник пользователя
+// 					familyId - uuid.UUID айдишник семейства токенов
+//					gracePeriodic - domain.GracePeriodic токены
+//			Return - (error) ошибка
+// 					(nil) - если создано успешно , и версия обновлена
+// 					(error) - если сессии по userId и familyId не существует (ErrNotFound)
+// 					(error) - если окно с полностью одинаковыми параметрами уже сущесвует (ErrGracePeriodicAlredyExist)
+//					(error) - если существует окно с такими же userId и familyId но разным содержимым и версиями
+// 								-> странное поведение (ErrGracePeriodVersionMismatch)
+// 					(error) - если не корректно заполнены аргументы (BadArgs)
+//			Tests:
+//					correct_request - корректный запрос с существующей сейссией,
+// 										должно создаться окно на 30 секунд которая содержит grace periodic,
+// 										+ на один грейд версия
+//					session_not_found - попытка создать окно и обновить версию несуществующей сессии,
+// 										должна вернуться ошибка ErrNotFound
+//					suspicious_refresh_rate - попытка обновить только что обновленную сессию ErrSuspiciousRefreshRate
+//					invalid_args - попытка создать окно с uuid.Nil, должна вернуться ошибка ErrBadArgs
+//
+
+func TestCreateGracePeriodic(t *testing.T) {
+
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
+	sessionStore, err := loadAndGetSessionStore()
+	if err != nil {
+		t.Fatalf("fail load session store, err:%v", err)
+	}
+
+	client, err := loadRedisClient()
+	if err != nil {
+		t.Fatalf("dont load redis err:%v", err)
+	}
+
+	userId1 := uuid.NewV7()
+	familyId1 := uuid.NewV7()
+	familyId2 := uuid.NewV7()
+
+	gracePeriodic1 := domain.GracePeriodic{
+		Version: "jwt-3",
+		Access:  "12345",
+		Refresh: "54321",
+	}
+
+	session1 := domain.Session{
+		UserId:     userId1,
+		DeviceId:   "device-1",
+		Ip:         "192.168.1.1",
+		Agent:      "chrome win 10",
+		CreatedAt:  time.Now().Add(-32 * time.Minute),
+		Version:    "jwt-2",
+		LastUpdate: time.Now().Add(-16 * time.Minute),
+	}
+
+	session2 := domain.Session{
+		UserId:     uuid.NewV7(),
+		DeviceId:   "device-34",
+		Ip:         "192.155.1.1",
+		Agent:      "safari ios",
+		CreatedAt:  time.Now().Add(-48 * time.Minute),
+		Version:    "jwt-4",
+		LastUpdate: time.Now().Add(-16 * time.Minute),
+	}
+
+	table := map[string]struct {
+		IsError       bool
+		Err           *repoerrors.RepoError
+		UserId        uuid.UUID
+		FamilyId      uuid.UUID
+		gracePeriodic domain.GracePeriodic
+		fnClear       func()
+		fnReady       func()
+		fnCheck       func()
+	}{
+
+		"correct_request": {
+			IsError:       false,
+			Err:           nil,
+			UserId:        userId1,
+			FamilyId:      familyId1,
+			gracePeriodic: gracePeriodic1,
+			fnClear: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnReady: func() {
+
+				hexUserId1 := hex.EncodeToString(userId1[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+				sessionKey1 := fmt.Sprintf("session:{%v}:user:%v", hexUserId1, hexFamilyId1)
+
+				_, err := client.HSet(context.TODO(), refreshKey1,
+					map[string]interface{}{
+						"user_id":     hexUserId1,
+						"device_id":   session1.DeviceId,
+						"ip":          session1.Ip,
+						"agent":       session1.Agent,
+						"created_at":  session1.CreatedAt.Unix(),
+						"version":     session1.Version,
+						"last_update": session1.LastUpdate.Unix(),
+					}).Result()
+				if err != nil {
+					t.Errorf("fail ready session err:%v", err)
+					return
+				}
+
+				_, err = client.Expire(context.TODO(), refreshKey1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready exp session err:%v", err)
+					return
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey1, hexFamilyId1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready session uniq key err:%v", err)
+					return
+				}
+
+				hexUserId2 := hex.EncodeToString(session2.UserId[:])
+				hexFamilyId2 := hex.EncodeToString(familyId2[:])
+				refreshKey2 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId2, hexFamilyId2)
+				sessionKey2 := fmt.Sprintf("session:{%v}:user:%v", hexUserId2, hexFamilyId2)
+
+				_, err = client.HSet(context.TODO(), refreshKey2,
+					map[string]interface{}{
+						"user_id":     hexUserId2,
+						"device_id":   session2.DeviceId,
+						"ip":          session2.Ip,
+						"agent":       session2.Agent,
+						"created_at":  session2.CreatedAt.Unix(),
+						"version":     session2.Version,
+						"last_update": session2.LastUpdate.Unix(),
+					}).Result()
+				if err != nil {
+					t.Errorf("fail ready session err:%v", err)
+					return
+				}
+
+				_, err = client.Expire(context.TODO(), refreshKey2, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready exp session err:%v", err)
+					return
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey2, hexFamilyId2, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready session uniq key err:%v", err)
+					return
+				}
+			},
+			fnCheck: func() {
+
+				hexUserId1 := hex.EncodeToString(userId1[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+				graceKey1 := fmt.Sprintf("session:{%v}:graceperiodic:%v", hexUserId1, hexFamilyId1)
+
+				data, err := client.HGetAll(context.TODO(), graceKey1).Result()
+				if err != nil {
+					t.Errorf("fail check grace periodic return error %v", err)
+				}
+
+				checkGrace := &domain.GracePeriodic{}
+
+				version, ok := data["version"]
+				if !ok {
+					t.Errorf("fail dont have version field")
+				}
+				checkGrace.Version = version
+
+				access, ok := data["access"]
+				if !ok {
+					t.Errorf("fail dont have access field")
+				}
+				checkGrace.Access = access
+
+				refresh, ok := data["refresh"]
+				if !ok {
+					t.Errorf("fail dont have refresh field")
+				}
+				checkGrace.Access = refresh
+
+				if checkGrace.Version != gracePeriodic1.Version || checkGrace.Access != gracePeriodic1.Access ||
+					checkGrace.Refresh != gracePeriodic1.Refresh {
+					t.Errorf("fail fields grace periodic dont equal")
+				}
+
+				versionSession, err := client.HGet(context.TODO(), refreshKey1, "version").Result()
+				if err != nil {
+					t.Errorf("fail get version err:%v", err)
+				}
+
+				if versionSession != gracePeriodic1.Version {
+					t.Errorf("fail update version want %v have %v", gracePeriodic1.Version, versionSession)
+				}
+
+				hexUserId2 := hex.EncodeToString(session2.UserId[:])
+				hexFamilyId2 := hex.EncodeToString(familyId2[:])
+				refreshKey2 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId2, hexFamilyId2)
+
+				versionSession2, err := client.HGet(context.TODO(), refreshKey2, "version").Result()
+				if err != nil {
+					t.Errorf("fail get version err:%v", err)
+				}
+
+				if versionSession2 != session2.Version {
+					t.Errorf("fail shouldh't update version session 2 want %v have %v", session2.Version, versionSession2)
+				}
+			},
+		},
+		"session_not_found": {
+			IsError:  true,
+			Err:      custerr.ErrNotFound,
+			UserId:   userId1,
+			FamilyId: uuid.New(),
+			gracePeriodic: domain.GracePeriodic{
+				Version: "ver-2",
+				Access:  "12345",
+				Refresh: "54321",
+			},
+			fnClear: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnReady: func() {
+				hexUserId1 := hex.EncodeToString(userId1[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+				sessionKey1 := fmt.Sprintf("session:{%v}:user:%v", hexUserId1, hexFamilyId1)
+
+				_, err := client.HSet(context.TODO(), refreshKey1,
+					map[string]interface{}{
+						"user_id":     hexUserId1,
+						"device_id":   session1.DeviceId,
+						"ip":          session1.Ip,
+						"agent":       session1.Agent,
+						"created_at":  session1.CreatedAt.Unix(),
+						"version":     session1.Version,
+						"last_update": session1.LastUpdate.Unix(),
+					}).Result()
+				if err != nil {
+					t.Errorf("fail ready session err:%v", err)
+					return
+				}
+
+				_, err = client.Expire(context.TODO(), refreshKey1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready exp session err:%v", err)
+					return
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey1, hexFamilyId1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready session uniq key err:%v", err)
+					return
+				}
+			},
+			fnCheck: func() {
+
+				hexUserId1 := hex.EncodeToString(userId1[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+				gracePattern := fmt.Sprintf("session:{%v}:graceperiodic:*", hexUserId1)
+
+				version, err := client.HGet(context.TODO(), refreshKey1, "version").Result()
+				if err != nil {
+					t.Errorf("fail get version from session err:%v", err)
+				}
+
+				if version != session1.Version {
+					t.Errorf("fail version dont equal want %v have %v", session1.Version, version)
+				}
+
+				iterPattern := client.Scan(context.TODO(), 0, gracePattern, 0).Iterator()
+				count := 0
+				for iterPattern.Next(context.TODO()) {
+					count++
+				}
+
+				if count > 0 {
+					t.Errorf("fail repo have grace periodic")
+				}
+			},
+		},
+		"suspicious_refresh_rate": {
+			IsError:       true,
+			Err:           custerr.ErrSuspiciousRefreshRate,
+			UserId:        userId1,
+			FamilyId:      familyId1,
+			gracePeriodic: gracePeriodic1,
+			fnClear: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnReady: func() {
+				hexUserId1 := hex.EncodeToString(userId1[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+				sessionKey1 := fmt.Sprintf("session:{%v}:user:%v", hexUserId1, hexFamilyId1)
+				graceKey1 := fmt.Sprintf("session:{%v}:graceperiodic:%v", hexUserId1, hexFamilyId1)
+
+				_, err := client.HSet(context.TODO(), refreshKey1,
+					map[string]interface{}{
+						"user_id":     hexUserId1,
+						"device_id":   session1.DeviceId,
+						"ip":          session1.Ip,
+						"agent":       session1.Agent,
+						"created_at":  session1.CreatedAt.Unix(),
+						"version":     session1.Version,
+						"last_update": session1.LastUpdate.Unix(),
+					}).Result()
+				if err != nil {
+					t.Errorf("fail ready session err:%v", err)
+					return
+				}
+
+				_, err = client.Expire(context.TODO(), refreshKey1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready exp session err:%v", err)
+					return
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey1, hexFamilyId1, 72*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready session uniq key err:%v", err)
+					return
+				}
+
+				_, err = client.HSet(context.TODO(), graceKey1,
+					map[string]interface{}{
+						"version": "jwt-3",
+						"access":  "12345",
+						"refresh": "54321",
+					}).Result()
+
+				_, err = client.Expire(context.TODO(), graceKey1, 30*time.Second).Result()
+				if err != nil {
+					t.Errorf("fail ready exp grace periodic err:%v", err)
+					return
+				}
+
+				time.Sleep(30 * time.Second)
+			},
+			fnCheck: func() {
+				hexUserId1 := hex.EncodeToString(userId1[:])
+				hexFamilyId1 := hex.EncodeToString(familyId1[:])
+				refreshKey1 := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId1, hexFamilyId1)
+				gracePattern := fmt.Sprintf("session:{%v}:graceperiodic:*", hexUserId1)
+
+				version, err := client.HGet(context.TODO(), refreshKey1, "version").Result()
+				if err != nil {
+					t.Errorf("fail get version from session err:%v", err)
+				}
+
+				if version != session1.Version {
+					t.Errorf("fail version dont equal want %v have %v", session1.Version, version)
+				}
+
+				iterPattern := client.Scan(context.TODO(), 0, gracePattern, 0).Iterator()
+				count := 0
+				for iterPattern.Next(context.TODO()) {
+					count++
+				}
+
+				if count > 0 {
+					t.Errorf("fail repo have grace periodic")
+				}
+			},
+		},
+		"invalid_args": {
+			IsError:       true,
+			Err:           custerr.ErrBadArgs,
+			UserId:        uuid.Nil(),
+			FamilyId:      uuid.Nil(),
+			gracePeriodic: domain.GracePeriodic{},
+			fnClear: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnReady: func() {},
+			fnCheck: func() {
+				size, err := client.DBSize(context.TODO()).Result()
+				if err != nil {
+					t.Errorf("fail get db size err:%v", err)
+				}
+
+				if size > 0 {
+					t.Error("fail db has data")
+				}
+			},
+		},
+	}
+
+	for name, val := range table {
+
+		t.Run(name, func(t *testing.T) {
+
+			val.fnReady()
+
+			err := sessionStore.CreateGracePeriodic(context.TODO(), val.UserId, val.FamilyId, val.gracePeriodic)
+			if val.IsError {
+				if !val.Err.Is(err) {
+					t.Errorf("fail errors dont equal want %v have %v", val.Err, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("fail shouldn't return error %v", err)
+				}
+			}
+
+			val.fnCheck()
+			val.fnClear()
+
+		})
+
 	}
 
 }
@@ -1602,7 +2285,7 @@ func loadAndGetSessionStore() (*reporedis.SessionStore, error) {
 	}
 
 	au := domain.GetMockAuditService()
-	ss := reporedis.NewSessionStore(repo, au, 60*time.Minute)
+	ss := reporedis.NewSessionStore(repo, au, 60*time.Minute, cm)
 
 	return ss, nil
 }

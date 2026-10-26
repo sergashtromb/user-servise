@@ -24,8 +24,8 @@ const (
 	EventGetSessionUserFailed           EventType = "get_user_session_failed"
 	EventDeleteSessionSuccess           EventType = "del_session_success"
 	EventDeleteSessionFailed            EventType = "del_session_failed"
-	EventUpdateRefreshTokenSuccess      EventType = "update_refresh_token_success"
-	EventUpdateRefreshTokenFailed       EventType = "update_refresh_token_failed"
+	EventUpdateVersionTokenSuccess      EventType = "update_version_token_success"
+	EventUpdateVersionTokenFailed       EventType = "update_version_token_failed"
 
 	EventLoginSucces EventType = "login_succes"
 	EventLoginFailed EventType = "login_failed"

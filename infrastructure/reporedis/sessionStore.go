@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"user_service/config"
 	dm "user_service/domain"
 	"user_service/infrastructure/reporedis/custerr"
+	"user_service/infrastructure/reporedis/scripts"
 	"uuid"
 
 	"github.com/redis/go-redis/v9"
@@ -22,16 +24,18 @@ const (
 )
 
 type SessionStore struct {
-	repo  *Repository
-	audit dm.AuditService
-	ttl   time.Duration
+	accessLifetime int64
+	repo           *Repository
+	audit          dm.AuditService
+	ttl            time.Duration
 }
 
-func NewSessionStore(repo *Repository, audit dm.AuditService, ttl time.Duration) *SessionStore {
+func NewSessionStore(repo *Repository, audit dm.AuditService, ttl time.Duration, cm *config.ConfigManager) *SessionStore {
 	return &SessionStore{
-		repo:  repo,
-		audit: audit,
-		ttl:   ttl,
+		accessLifetime: int64(cm.Get().TokenConf.AccessLifeTime),
+		repo:           repo,
+		audit:          audit,
+		ttl:            ttl,
 	}
 }
 
@@ -305,15 +309,82 @@ func (sst *SessionStore) GetSessionByFamilyId(ctx context.Context, userId uuid.U
 	return session, nil
 }
 
-// TODO
-// add new function for update version
-
+// FORDEL
 func (sst *SessionStore) UpdateVersion(ctx context.Context, userId uuid.UUID, familyId uuid.UUID) (string, error) {
-	return "", nil
+
+	errBadArgs := custerr.ErrBadArgs.Clone()
+	if userId == uuid.Nil() {
+		errBadArgs.Fields = append(errBadArgs.Fields, "user_id")
+	}
+	if familyId == uuid.Nil() {
+		errBadArgs.Fields = append(errBadArgs.Fields, "family_id")
+	}
+
+	if len(errBadArgs.Fields) > 0 {
+		return "", errBadArgs
+	}
+
+	var ver string
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
+
+	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
+
+		userHex := hex.EncodeToString(userId[:])
+		familyHex := hex.EncodeToString(familyId[:])
+
+		key := makeKey(RefreshKey, userHex, familyHex)
+		timeNow := time.Now().Unix()
+
+		data, err := scripts.UpdateVersion.Run(ctx, client, []string{key}, timeNow, sst.accessLifetime).Result()
+		if err != nil {
+
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventUpdateVersionTokenFailed, dm.EventPlaceRedis,
+				&strerr, userHex, traceId)
+			sst.audit.Log(ctx, event)
+
+			if strings.Contains(err.Error(), ErrLuaBadArgs) {
+				return custerr.ErrBadArgs
+			} else if strings.Contains(err.Error(), ErrLuaSessionNotFound) {
+				return custerr.ErrNotFound
+			} else if strings.Contains(err.Error(), ErrLuaSuspiciousRefreshRate) {
+				return custerr.ErrSuspiciousRefreshRate
+			} else if strings.Contains(err.Error(), ErrLuaBadVersion) {
+				return custerr.ErrBadData
+			} else {
+				return err
+			}
+		}
+
+		version, ok := data.(string)
+		if !ok {
+			return custerr.ErrBadData
+		}
+
+		ver = version
+
+		event := dm.NewSuccessEvent(dm.EventUpdateVersionTokenSuccess, dm.EventPlaceRedis, userHex, traceId)
+		sst.audit.Log(ctx, event)
+
+		return nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	return ver, nil
 }
 
 // TODO
 // add new function for make grace periodic on 30 sec ttl
+func (sst *SessionStore) CreateGracePeriodic(ctx context.Context, userId uuid.UUID, familyId uuid.UUID, gracePeriodic dm.GracePeriodic) error {
+	return nil
+}
 
 // TODO
 // add new function for update ip adress
