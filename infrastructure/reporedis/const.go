@@ -22,8 +22,12 @@ const (
 
 // err lua conts
 const (
-	ErrLuaBadArgs               = "bad args"
-	ErrLuaSessionNotFound       = "session not found"
-	ErrLuaSuspiciousRefreshRate = "suspicious refresh rate"
-	ErrLuaBadVersion            = "bad version"
+	ErrLuaBadArgs                   = "bad args"
+	ErrLuaSessionNotFound           = "session not found"
+	ErrLuaSuspiciousRefreshRate     = "suspicious refresh rate"
+	ErrLuaBadVersion                = "bad version"
+	ErrLuaGracePeriodicAlredyExists = "grace periodic alredy exist"
+	ErrLuaGracePeriodicVersionMiss  = "grace periodic version mismatch"
+	ErrLuaGracePeriodicNoExists     = "grace periodic not exists"
+	ErrLuaBadData                   = "bad data"
 )

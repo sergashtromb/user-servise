@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	SessionKey = "session:{%v}:user:"
-	RefreshKey = "session:{%v}:refresh:"
+	SessionKey    = "session:{%v}:user:"
+	RefreshKey    = "session:{%v}:refresh:"
+	GracePeriodic = "session:{%v}:graceperiodic:"
 )
 
 type SessionStore struct {
@@ -32,7 +33,7 @@ type SessionStore struct {
 
 func NewSessionStore(repo *Repository, audit dm.AuditService, ttl time.Duration, cm *config.ConfigManager) *SessionStore {
 	return &SessionStore{
-		accessLifetime: int64(cm.Get().TokenConf.AccessLifeTime),
+		accessLifetime: 60 * int64(cm.Get().TokenConf.AccessLifeTime),
 		repo:           repo,
 		audit:          audit,
 		ttl:            ttl,
@@ -309,8 +310,7 @@ func (sst *SessionStore) GetSessionByFamilyId(ctx context.Context, userId uuid.U
 	return session, nil
 }
 
-// FORDEL
-func (sst *SessionStore) UpdateVersion(ctx context.Context, userId uuid.UUID, familyId uuid.UUID) (string, error) {
+func (sst *SessionStore) CreateGracePeriodic(ctx context.Context, userId uuid.UUID, familyId uuid.UUID, gracePeriodic dm.GracePeriodic) error {
 
 	errBadArgs := custerr.ErrBadArgs.Clone()
 	if userId == uuid.Nil() {
@@ -321,10 +321,8 @@ func (sst *SessionStore) UpdateVersion(ctx context.Context, userId uuid.UUID, fa
 	}
 
 	if len(errBadArgs.Fields) > 0 {
-		return "", errBadArgs
+		return errBadArgs
 	}
-
-	var ver string
 
 	traceId, ok := ctx.Value(dm.TraceKey).(string)
 	if !ok {
@@ -333,18 +331,20 @@ func (sst *SessionStore) UpdateVersion(ctx context.Context, userId uuid.UUID, fa
 
 	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
 
-		userHex := hex.EncodeToString(userId[:])
-		familyHex := hex.EncodeToString(familyId[:])
-
-		key := makeKey(RefreshKey, userHex, familyHex)
+		hexUserId := hex.EncodeToString(userId[:])
+		hexFamilyId := hex.EncodeToString(familyId[:])
 		timeNow := time.Now().Unix()
 
-		data, err := scripts.UpdateVersion.Run(ctx, client, []string{key}, timeNow, sst.accessLifetime).Result()
-		if err != nil {
+		sessionKey := makeKey(RefreshKey, hexUserId, hexFamilyId)
+		gracePeriodicKey := makeKey(GracePeriodic, hexUserId, hexFamilyId)
 
+		_, err := scripts.CreateGracePeriodicAndUpdateVersion.Run(ctx, client, []string{sessionKey, gracePeriodicKey},
+			gracePeriodic.Version, gracePeriodic.Access, gracePeriodic.Refresh, timeNow, sst.accessLifetime).Result()
+
+		if err != nil {
 			strerr := err.Error()
 			event := dm.NewFailedEvent(dm.EventUpdateVersionTokenFailed, dm.EventPlaceRedis,
-				&strerr, userHex, traceId)
+				&strerr, hexUserId, traceId)
 			sst.audit.Log(ctx, event)
 
 			if strings.Contains(err.Error(), ErrLuaBadArgs) {
@@ -355,35 +355,85 @@ func (sst *SessionStore) UpdateVersion(ctx context.Context, userId uuid.UUID, fa
 				return custerr.ErrSuspiciousRefreshRate
 			} else if strings.Contains(err.Error(), ErrLuaBadVersion) {
 				return custerr.ErrBadData
-			} else {
-				return err
+			} else if strings.Contains(err.Error(), ErrLuaGracePeriodicVersionMiss) {
+				return custerr.ErrGracePeriodicVersionMiss
+			} else if strings.Contains(err.Error(), ErrLuaGracePeriodicAlredyExists) {
+				return custerr.ErrGracePeriodicAlredyExist
+			} else if errors.Is(err, redis.Nil) {
+				return nil
 			}
 		}
 
-		version, ok := data.(string)
-		if !ok {
-			return custerr.ErrBadData
+		return nil
+	})
+
+	return err
+}
+
+func (sst *SessionStore) GetFromGracePeriodic(ctx context.Context, userId uuid.UUID, familyId uuid.UUID, version string) (string, string, error) {
+
+	errBadArgs := custerr.ErrBadArgs.Clone()
+	if userId == uuid.Nil() {
+		errBadArgs.Fields = append(errBadArgs.Fields, "user_id")
+	}
+	if familyId == uuid.Nil() {
+		errBadArgs.Fields = append(errBadArgs.Fields, "family_id")
+	}
+	if version == "" {
+		errBadArgs.Fields = append(errBadArgs.Fields, "version")
+	}
+
+	if len(errBadArgs.Fields) > 0 {
+		return "", "", errBadArgs
+	}
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
+
+	var access, refresh string
+	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
+
+		hexUserId := hex.EncodeToString(userId[:])
+		hexFamilyId := hex.EncodeToString(familyId[:])
+		sessKey := makeKey(RefreshKey, hexUserId, hexFamilyId)
+		gracePeriodicKey := makeKey(GracePeriodic, hexUserId, hexFamilyId)
+
+		result, err := scripts.GetFromGracePeriodic.Run(ctx, client, []string{sessKey, gracePeriodicKey}, version).Result()
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventGetSessionUserFailed, dm.EventPlaceRedis,
+				&strerr, hexUserId, traceId)
+			sst.audit.Log(ctx, event)
+
+			if strings.Contains(err.Error(), ErrLuaBadArgs) {
+				return custerr.ErrBadArgs
+			} else if strings.Contains(err.Error(), ErrLuaSessionNotFound) {
+				return custerr.ErrNotFound
+			} else if strings.Contains(err.Error(), ErrLuaGracePeriodicVersionMiss) {
+				return custerr.ErrGracePeriodicVersionMiss
+			} else if strings.Contains(err.Error(), ErrLuaGracePeriodicNoExists) {
+				return custerr.ErrGracePeriodicNoExists
+			} else if strings.Contains(err.Error(), ErrLuaBadData) {
+				return custerr.ErrBadData
+			}
+
+			return err
 		}
 
-		ver = version
-
-		event := dm.NewSuccessEvent(dm.EventUpdateVersionTokenSuccess, dm.EventPlaceRedis, userHex, traceId)
-		sst.audit.Log(ctx, event)
+		res := result.([]interface{})
+		access = res[0].(string)
+		refresh = res[1].(string)
 
 		return nil
 	})
 
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	return ver, nil
-}
-
-// TODO
-// add new function for make grace periodic on 30 sec ttl
-func (sst *SessionStore) CreateGracePeriodic(ctx context.Context, userId uuid.UUID, familyId uuid.UUID, gracePeriodic dm.GracePeriodic) error {
-	return nil
+	return access, refresh, nil
 }
 
 // TODO

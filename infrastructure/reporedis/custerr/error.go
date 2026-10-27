@@ -14,4 +14,6 @@ var (
 	ErrSessionAlredyExist       = repoerrors.NewError(RepoName, "session with family id alredy exist", "007")
 	ErrSuspiciousRefreshRate    = repoerrors.NewError(RepoName, "suspicious update frequency", "008")
 	ErrGracePeriodicAlredyExist = repoerrors.NewError(RepoName, "grace periodic alredy exist", "009")
+	ErrGracePeriodicVersionMiss = repoerrors.NewError(RepoName, "grace periodic version mismatch", "010")
+	ErrGracePeriodicNoExists    = repoerrors.NewError(RepoName, "grace periodic no exists", "011")
 )

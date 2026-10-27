@@ -11,10 +11,8 @@ import (
 var luaScripts embed.FS
 
 var (
-	// TEST write test for check invalid ttl, should return error
-	// FORDEL
-	UpdateRefreshToken = redis.NewScript(loadScript("UpdateRefreshToken.lua"))
-	UpdateVersion      = redis.NewScript(loadScript("UpdateVersion.lua"))
+	CreateGracePeriodicAndUpdateVersion = redis.NewScript(loadScript("CreateGracePeriodicAndUpdateVersion.lua"))
+	GetFromGracePeriodic                = redis.NewScript(loadScript("GetFromGracePeriodic.lua"))
 )
 
 func loadScript(name string) string {
