@@ -187,10 +187,26 @@ func (am *AuthMiddleware) ValidAccessToken(token string) (*AccessToken, error) {
 
 func (am *AuthMiddleware) ValidRefreshToken(token string) error {
 
+	tokenData, err := am.ValidRefreshTokenWithClaims(token)
+	if err != nil {
+		return err
+	}
+
+	isAt := tokenData.RegisteredClaims.IssuedAt.Time
+
+	if isAt.After(time.Now()) {
+		return ErrFutureDateToken
+	}
+
+	return nil
+}
+
+func (am *AuthMiddleware) ValidRefreshTokenWithClaims(token string) (*RefreshToken, error) {
+
 	errFE := ErrFieldEmpty.Clone()
 	if token == "" {
 		errFE.Fields = append(errFE.Fields, "token")
-		return errFE
+		return nil, errFE
 	}
 
 	data, err := jwt.ParseWithClaims(token,
@@ -204,27 +220,50 @@ func (am *AuthMiddleware) ValidRefreshToken(token string) error {
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
-			return ErrExpToken
+			return nil, ErrExpToken
 		} else if errors.Is(err, jwt.ErrTokenSignatureInvalid) {
-			return ErrInvalidSignToken
+			return nil, ErrInvalidSignToken
 		} else if errors.Is(err, jwt.ErrTokenInvalidClaims) {
-			return ErrInvalidToken
+			return nil, ErrInvalidToken
 		}
-		return err
+		return nil, err
 	}
 
 	tokenData, ok := data.Claims.(*RefreshToken)
 	if !ok || !data.Valid {
-		return ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
-	isAt := tokenData.RegisteredClaims.IssuedAt.Time
+	return tokenData, nil
+}
 
-	if isAt.After(time.Now()) {
-		return ErrFutureDateToken
+func ParseRefreshToken(token string, cm *config.ConfigManager) (*jwt.Token, error) {
+
+	if token == "" {
+		return nil, ErrFieldEmpty
 	}
 
-	return nil
+	data, err := jwt.ParseWithClaims(token,
+		&RefreshToken{},
+		func(t *jwt.Token) (any, error) {
+			return cm.Get().TokenConf.RefreshBt, nil
+		},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithIssuer(Issuer),
+		jwt.WithExpirationRequired())
+
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, ErrExpToken
+		} else if errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+			return nil, ErrInvalidSignToken
+		} else if errors.Is(err, jwt.ErrTokenInvalidClaims) {
+			return nil, ErrInvalidToken
+		}
+		return nil, err
+	}
+
+	return data, nil
 }
 
 type ErrBody struct {

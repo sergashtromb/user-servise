@@ -17,8 +17,12 @@ type UserStore interface {
 type SessionStore interface {
 	Registration(ctx context.Context, session *Session, familyId uuid.UUID) error
 	GetAllSession(ctx context.Context, userId uuid.UUID) ([]Session, error)
-	GetSessionByFamilyId(ctx context.Context, userId uuid.UUID, familyId uuid.UUID) (*Session, error)
+	GetSessionByFamilyId(ctx context.Context, userId, familyId uuid.UUID) (*Session, error)
+	GetSessionByRefresh(ctx context.Context, userId uuid.UUID, refresh string) (*Session, error)
 	UpdateRefreshToken(ctx context.Context, id uuid.UUID, oldToken string, newToken string) error
 	DeleteAll(ctx context.Context, id uuid.UUID) error
 	DeleteByRefresh(ctx context.Context, id uuid.UUID, refresh string) error
+	CreateGracePeriodic(ctx context.Context, userId, familyId uuid.UUID, gracePeriodic GracePeriodic) error
+	GetFromGracePeriodic(ctx context.Context, userId, familyId uuid.UUID, version string) (string, string, error)
+	UpdateIpAdress(ctx context.Context, userId, familyId uuid.UUID, ip string) error
 }

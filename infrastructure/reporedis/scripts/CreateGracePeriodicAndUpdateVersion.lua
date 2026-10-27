@@ -50,8 +50,7 @@ if grace_periodic_is_exist == 1 then
 
     local hash_data = to_hash_map(data)
     
-    if hash_data[field_version] == new_version and hash_data[field_access] == access_token
-        and hash_data[field_refresh] == refresh_token then
+    if hash_data[field_version] == new_version then
         return redis.error_reply("grace periodic alredy exist")        
     else
         return redis.error_reply("grace periodic version mismatch")        

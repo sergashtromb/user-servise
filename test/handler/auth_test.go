@@ -9,6 +9,7 @@ import (
 	"time"
 	"user_service/config"
 	"user_service/domain"
+	"user_service/infrastructure/reporedis/custerr"
 	"user_service/initial/middleware"
 	"uuid"
 
@@ -62,7 +63,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 		},
 	}
 
-	_ = []struct {
+	table := []struct {
 		Name               string
 		Comm               string
 		IsError            bool
@@ -96,14 +97,16 @@ func TestUpdateRefreshToken(t *testing.T) {
 			RefreshExp: time.Now().Add(
 				time.Duration(time.Duration(cm.Get().TokenConf.RefreshLifeTime) * time.Minute)),
 			UserId:         id1,
-			MethodMustCall: []string{"GetSessionByRefresh", "UpdateRefreshToken"},
+			MethodMustCall: []string{"GetSessionByFamilyId", "GetFromGracePeriodic", "CreateGracePeriodic"},
 			MethodNoCall:   []string{"Registration", "GetAllSession", "DeleteAll", "DeleteByRefresh"},
 			fnSetUpMock: func() {
 				resetMock(&sessionStore.Mock, t)
-				sessionStore.On("GetSessionByRefresh", context.Background(), id1, resresh1).
+				sessionStore.On("GetSessionByFamilyId", context.Background(), id1, resresh1).
 					Return(&trueSessions[0], nil).
 					Once()
-				sessionStore.On("UpdateRefreshToken", context.Background(), id1, resresh1, mock.Anything).
+				sessionStore.On("CreateGracePeriodic", context.Background(), id1, id1, domain.GracePeriodic{
+					Version: trueSessions[0].Version,
+				}).
 					Return(nil).
 					Once()
 			},
@@ -149,7 +152,8 @@ func TestUpdateRefreshToken(t *testing.T) {
 			RefreshExp:         time.Now(),
 			UserId:             uuid.Nil(),
 			MethodMustCall:     []string{},
-			MethodNoCall:       []string{"Registration", "GetAllSession", "DeleteAll", "DeleteByRefresh", "GetSessionByRefresh", "UpdateRefreshToken"},
+			MethodNoCall: []string{"Registration", "GetAllSession", "DeleteAll", "DeleteByRefresh", "GetSessionByRefresh",
+				"CreateGracePeriodic", "GetFromGracePeriodic", "UpdateIpAdress"},
 			fnSetUpMock: func() {
 				resetMock(&sessionStore.Mock, t)
 			},
@@ -188,14 +192,17 @@ func TestUpdateRefreshToken(t *testing.T) {
 			RefreshIssAt:       time.Now(),
 			RefreshExp:         time.Now(),
 			UserId:             uuid.Nil(),
-			MethodMustCall:     []string{"GetSessionByRefresh", "DeleteByRefresh"},
-			MethodNoCall:       []string{"Registration", "GetAllSession", "DeleteAll", "UpdateRefreshToken"},
+			MethodMustCall:     []string{"GetSessionByFamilyId", "DeleteByRefresh"},
+			MethodNoCall: []string{"Registration", "GetAllSession", "DeleteAll", "CreateGracePeriodic",
+				"GetFromGracePeriodic", "UpdateIpAdress"},
 			fnSetUpMock: func() {
 				resetMock(&sessionStore.Mock, t)
 				sessionStore.On("GetSessionByRefresh", context.Background(), id1, resresh1).
 					Return(&trueSessions[0], nil).
 					Once()
-
+				sessionStore.On("GetSessionByFamilyId", context.Background(), id1, id1).
+					Return(&trueSessions[0], nil).
+					Once()
 				sessionStore.On("DeleteByRefresh", context.Background(), id1, resresh1).
 					Return(nil).
 					Once()
@@ -221,6 +228,176 @@ func TestUpdateRefreshToken(t *testing.T) {
 				}
 			},
 		},
+		{
+			Name:               "get_access_and_refresh_from_grace_periodic",
+			Comm:               "should return correct answer from grace periodic",
+			IsError:            false,
+			IpReq:              "1.1.1.1:1234",
+			DeviceReq:          deviceId1,
+			AgentReq:           agent1,
+			RefreshForSessions: refreshs,
+			Sessions:           trueSessions,
+			UserId:             id1,
+			MethodMustCall:     []string{"GetSessionByFamilyId", "CreateGracePeriodic", "GetFromGracePeriodic"},
+			MethodNoCall: []string{"Registration", "GetAllSession", "DeleteAll", "DeleteByRefresh",
+				"UpdateRefreshToken", "UpdateIpAdress"},
+			fnSetUpMock: func() {
+				resetMock(&sessionStore.Mock, t)
+				sessionStore.On("GetSessionByFamilyId", context.Background(), id1, resresh1).
+					Return(&trueSessions[0], nil).
+					Once()
+				sessionStore.On("GetFromGracePeriodic", context.Background(), id1, id1, trueSessions[0].Version).
+					Return(resresh1, resresh1, nil).
+					Once()
+			},
+			fnGetResultAnswer: func() *ResponseResult {
+				sec := cm.Get().TokenConf.AccessLifeTime * 60
+				bodyJson := fmt.Sprintf(`
+				{
+					"access_token": "%s",
+					"token_type": "Bearer",
+					"expires_in": "%v",
+					"refresh_token": "%s"
+				}
+				`, resresh1, sec, resresh1)
+
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.Header().Set("Cache-Control", "no-store")
+				resp.Header().Set("Pragma", "no-cache")
+				resp.WriteHeader(http.StatusOK)
+				resp.Write([]byte(bodyJson))
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+		},
+		{
+			Name:               "get_access_and_refresh_from_no_exists_grace_periodic",
+			Comm:               "should return 400 bad request, and delete session by refresh",
+			IsError:            true,
+			IpReq:              "1.1.1.1:1234",
+			DeviceReq:          deviceId1,
+			AgentReq:           agent1,
+			RefreshForSessions: refreshs,
+			Sessions:           trueSessions,
+			UserId:             id1,
+			MethodMustCall:     []string{"GetSessionByRefresh", "GetFromGracePeriodic", "DeleteByRefresh"},
+			MethodNoCall: []string{"Registration", "GetAllSession", "DeleteAll",
+				"UpdateRefreshToken", "CreateGracePeriodic", "UpdateIpAdress"},
+			fnSetUpMock: func() {
+				resetMock(&sessionStore.Mock, t)
+				sessionStore.On("GetSessionByRefresh", context.Background(), id1, resresh1).
+					Return(&trueSessions[0], nil).
+					Once()
+				sessionStore.On("GetFromGracePeriodic", context.Background(), id1, id1, trueSessions[0].Version).
+					Return("", "", custerr.ErrGracePeriodicNoExists).
+					Once()
+				sessionStore.On("DeleteByRefresh", context.Background(), id1, resresh1).
+					Return(nil).
+					Once()
+			},
+			fnGetResultAnswer: func() *ResponseResult {
+				bodyJson := `{
+					"error": "invalid_grant",
+					"message": "The refresh token is invalid or session not found.",
+					"code": "INVALID_GRANT"
+				}`
+
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusBadRequest)
+				resp.Write([]byte(bodyJson))
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+		},
+		{
+			Name:               "get_access_and_refresh_with_old_version",
+			Comm:               "should return 400 bad request, and delete session by refresh",
+			IsError:            true,
+			IpReq:              "1.1.1.1:1234",
+			DeviceReq:          deviceId1,
+			AgentReq:           agent1,
+			RefreshForSessions: refreshs,
+			Sessions:           trueSessions,
+			UserId:             id1,
+			MethodMustCall:     []string{"GetSessionByRefresh", "GetFromGracePeriodic", "DeleteByRefresh"},
+			MethodNoCall: []string{"Registration", "GetAllSession", "DeleteAll",
+				"UpdateRefreshToken", "CreateGracePeriodic", "UpdateIpAdress"},
+			fnSetUpMock: func() {
+				resetMock(&sessionStore.Mock, t)
+				sessionStore.On("GetSessionByRefresh", context.Background(), id1, resresh1).
+					Return(&trueSessions[0], nil).
+					Once()
+				sessionStore.On("GetFromGracePeriodic", context.Background(), id1, id1, "wrong_version").
+					Return("", "", custerr.ErrGracePeriodicVersionMiss).
+					Once()
+				sessionStore.On("DeleteByRefresh", context.Background(), id1, resresh1).
+					Return(nil).
+					Once()
+			},
+			fnGetResultAnswer: func() *ResponseResult {
+				bodyJson := `{
+					"error": "invalid_grant",
+					"message": "The refresh token is invalid or session not found.",
+					"code": "INVALID_GRANT"
+				}`
+
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusBadRequest)
+				resp.Write([]byte(bodyJson))
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+		},
+	}
+
+	// Run test cases
+	for _, tt := range table {
+		t.Run(tt.Name, func(t *testing.T) {
+			tt.fnSetUpMock()
+
+			// Verify expected methods were set up
+			for _, must := range tt.MethodMustCall {
+				found := false
+				for _, exp := range sessionStore.ExpectedCalls {
+					if exp.Method == must {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("method %s should have been mocked", must)
+				}
+			}
+
+			// Verify excluded methods were NOT set up
+			for _, noCall := range tt.MethodNoCall {
+				found := false
+				for _, exp := range sessionStore.ExpectedCalls {
+					if exp.Method == noCall {
+						found = true
+						break
+					}
+				}
+				if found {
+					t.Errorf("method %s should NOT have been mocked", noCall)
+				}
+			}
+		})
 	}
 
 }

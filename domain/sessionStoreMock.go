@@ -44,6 +44,14 @@ func (m *SessionStoreMock) GetSessionByFamilyId(ctx context.Context, userId uuid
 	return nil, args.Error(1)
 }
 
+func (m *SessionStoreMock) GetSessionByRefresh(ctx context.Context, userId uuid.UUID, refresh string) (*Session, error) {
+	args := m.Called(ctx, userId, refresh)
+	if v := args.Get(0); v != nil {
+		return v.(*Session), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
 func (m *SessionStoreMock) UpdateRefreshToken(ctx context.Context, id uuid.UUID, oldToken string, newToken string) error {
 	args := m.Called(ctx, id, oldToken, newToken)
 	return args.Error(0)
@@ -56,5 +64,20 @@ func (m *SessionStoreMock) DeleteAll(ctx context.Context, id uuid.UUID) error {
 
 func (m *SessionStoreMock) DeleteByRefresh(ctx context.Context, id uuid.UUID, refresh string) error {
 	args := m.Called(ctx, id, refresh)
+	return args.Error(0)
+}
+
+func (m *SessionStoreMock) CreateGracePeriodic(ctx context.Context, userId, familyId uuid.UUID, gracePeriodic GracePeriodic) error {
+	args := m.Called(ctx, userId, familyId, gracePeriodic)
+	return args.Error(0)
+}
+
+func (m *SessionStoreMock) GetFromGracePeriodic(ctx context.Context, userId, familyId uuid.UUID, version string) (string, string, error) {
+	args := m.Called(ctx, userId, familyId, version)
+	return args.String(0), args.String(1), args.Error(2)
+}
+
+func (m *SessionStoreMock) UpdateIpAdress(ctx context.Context, userId, familyId uuid.UUID, ip string) error {
+	args := m.Called(ctx, userId, familyId, ip)
 	return args.Error(0)
 }

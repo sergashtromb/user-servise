@@ -1837,82 +1837,6 @@ func TestCreateGracePeriodic(t *testing.T) {
 
 // SPEC
 //	SessionStore:
-//		GetFromGracePeriodic - метод получает access и refresh токены если сущесвует окно в кеше
-//			Args - 	ctx - контекст выполнения
-// 					userId - uuid.UUID айдишник пользователя
-// 					familyId - uuid.UUID айдишник семейства токенов
-//					newVersion - string строка новой версии
-//			Return - (string, string, error) access и refresh токены, ошибка
-// 					(access, refresh, nil) - если окно существует и версии совпали вернет токены
-// 					("", "", error) - если сессии не существует (ErrNotFound)
-// 					("", "", error) - если окно существует но не совпали версии (ErrGracePeriodVersionMismatch)
-//					("", "", error) - если сессия существует но окна нет (ErrGracePeriodicNoExists)
-// 					("", "", error) - если не корректно заполнены аргументы (BadArgs)
-//			Tests:
-//					correct_request - корректный запрос с существующим окном,
-// 										должно вернуть токены из окна
-//					session_not_found - попытка получить токены несуществующей сессии,
-// 										должна вернуться ошибка ErrNotFound
-//					version_mismatch - попытка получить токены но версия не совпадает с окном, должен вернуть ErrGracePeriodVersionMismatch
-//					no_exists - попытка получить токены сессии из несуществующего окна, должен вернуть ErrGracePeriodicNoExists
-//					invalid_args - попытка получить токены по не валидным аргуменатм, должна вернуться ошибка ErrBadArgs
-//
-
-func loadRedisClient() (*redis.Client, error) {
-
-	util.LoadEnvFile()
-
-	cm := config.NewConfigManager()
-	cm.Init(context.TODO(), "")
-
-	redisConfig := cm.Get().RedisConf
-
-	client := redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("%s:%s", redisConfig.Host, redisConfig.Port),
-		DB:   redisConfig.DbNum,
-
-		Password: redisConfig.Password,
-
-		PoolSize:        redisConfig.PoolSize,
-		MinIdleConns:    redisConfig.MinIdleConn,
-		MaxIdleConns:    redisConfig.MaxIdleConn,
-		ConnMaxIdleTime: time.Duration(redisConfig.ConnMaxIdleTime) * time.Minute,
-		ConnMaxLifetime: time.Duration(redisConfig.ConnMaxLifetime) * time.Minute,
-
-		DialTimeout:  time.Duration(redisConfig.DialTimeout) * time.Second,
-		ReadTimeout:  time.Duration(redisConfig.ReadTimeout) * time.Second,
-		WriteTimeout: time.Duration(redisConfig.WriteTimeout) * time.Second,
-		PoolTimeout:  time.Duration(redisConfig.PoolTimeout) * time.Second,
-	})
-
-	if _, err := client.Ping(context.TODO()).Result(); err != nil {
-		return nil, err
-	}
-
-	return client, nil
-}
-
-func loadAndGetSessionStore() (*reporedis.SessionStore, error) {
-	ctx := context.Background()
-	util.LoadEnvFile()
-
-	cm := config.NewConfigManager()
-
-	cm.Init(ctx, "")
-
-	repo, err := reporedis.NewRepository(ctx, cm)
-	if err != nil {
-		return nil, fmt.Errorf("Failed connect in redis %v\n", err)
-	}
-
-	au := domain.GetMockAuditService()
-	ss := reporedis.NewSessionStore(repo, au, 60*time.Minute, cm)
-
-	return ss, nil
-}
-
-// SPEC
-//	SessionStore:
 //		GetFromGracePeriodic - метод получает access и refresh токены из grace periodic
 //			Args - ctx - контекст выполнения, userId - uuid пользователя, familyId - uuid семейства,
 //					version - версия токена для проверки
@@ -2052,11 +1976,11 @@ func TestGetFromGracePeriodic(t *testing.T) {
 			},
 		},
 		"session_not_found": {
-			IsError:   true,
-			Err:       custerr.ErrNotFound,
-			UserId:    userId1,
-			FamilyId:  familyId1,
-			Version:   "jwt-2",
+			IsError:  true,
+			Err:      custerr.ErrNotFound,
+			UserId:   userId1,
+			FamilyId: familyId1,
+			Version:  "jwt-2",
 			fnClear: func() {
 				_, err := client.FlushDB(context.TODO()).Result()
 				if err != nil {
@@ -2068,11 +1992,11 @@ func TestGetFromGracePeriodic(t *testing.T) {
 			},
 		},
 		"grace_periodic_not_exists": {
-			IsError: true,
-			Err:     custerr.ErrGracePeriodicNoExists,
-			UserId:  userId1,
+			IsError:  true,
+			Err:      custerr.ErrGracePeriodicNoExists,
+			UserId:   userId1,
 			FamilyId: familyId1,
-			Version: "jwt-2",
+			Version:  "jwt-2",
 			fnClear: func() {
 				_, err := client.FlushDB(context.TODO()).Result()
 				if err != nil {
@@ -2222,4 +2146,218 @@ func TestGetFromGracePeriodic(t *testing.T) {
 
 	}
 
+}
+
+// SPEC
+//	SessionStore:
+//		UpdateIpAdress - метод выполняет обновление у IP адреса
+//			Args - ctx - контекст выполнения, userId - uuid пользователя, familyId - uuid семейства,
+//					ip - новый ip
+//			Return - error
+//			Tests:
+//					correct_request - корректный запрос который вернет nil и обновит ip у сессии
+//					session_not_found - запрос на апдейт ip для несуществующей сессии, должен вернуть ErrNotFound
+//
+//					invalid_args - попытка сделать update с invalid args
+
+func TestUpdateIpAdress(t *testing.T) {
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
+	sessionStore, err := loadAndGetSessionStore()
+	if err != nil {
+		t.Fatalf("fail load session store, err:%v", err)
+	}
+
+	client, err := loadRedisClient()
+	if err != nil {
+		t.Fatalf("dont load redis err:%v", err)
+	}
+
+	userId1 := uuid.NewV7()
+	familyId1 := uuid.NewV7()
+
+	session1 := domain.Session{
+		UserId:    userId1,
+		DeviceId:  "device-1",
+		Ip:        "192.168.1.1",
+		Agent:     "chrome win 10",
+		CreatedAt: time.Now().Truncate(time.Second),
+		Version:   "jwt-1",
+	}
+
+	table := map[string]struct {
+		IsError      bool
+		Err          *repoerrors.RepoError
+		UserId       uuid.UUID
+		FamilyId     uuid.UUID
+		NewIp        string
+		fnReady      func()
+		fnCleanUp    func()
+		fnCheckAfter func()
+	}{
+		"correct_request": {
+			IsError:  false,
+			Err:      nil,
+			UserId:   userId1,
+			FamilyId: familyId1,
+			NewIp:    "10.0.0.1",
+			fnReady: func() {
+				hexUserId := hex.EncodeToString(userId1[:])
+				hexFamId := hex.EncodeToString(familyId1[:])
+				refreshKey := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId, hexFamId)
+				sessionKey := fmt.Sprintf("session:{%v}:user:%v", hexUserId, hexFamId)
+
+				data := map[string]interface{}{
+					"user_id":     hex.EncodeToString(session1.UserId[:]),
+					"device_id":   session1.DeviceId,
+					"agent":       session1.Agent,
+					"ip":          session1.Ip,
+					"created_at":  session1.CreatedAt.Unix(),
+					"version":     session1.Version,
+					"last_update": session1.LastUpdate.Unix(),
+				}
+
+				_, err := client.HSet(context.TODO(), refreshKey, data).Result()
+				if err != nil {
+					t.Errorf("fail ready test session err:%v", err)
+				}
+				_, err = client.Expire(context.TODO(), refreshKey, 10*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready test session ttl err:%v", err)
+				}
+
+				_, err = client.Set(context.TODO(), sessionKey, hexFamId, 10*time.Hour).Result()
+				if err != nil {
+					t.Errorf("fail ready test session sessionKey err:%v", err)
+				}
+			},
+			fnCleanUp: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnCheckAfter: func() {
+				hexUserId := hex.EncodeToString(userId1[:])
+				hexFamId := hex.EncodeToString(familyId1[:])
+				refreshKey := fmt.Sprintf("session:{%v}:refresh:%v", hexUserId, hexFamId)
+
+				ip, err := client.HGet(context.TODO(), refreshKey, "ip").Result()
+				if err != nil {
+					t.Errorf("fail get ip err:%v", err)
+				}
+
+				if ip != "10.0.0.1" {
+					t.Errorf("fail ip not updated want %v have %v", "10.0.0.1", ip)
+				}
+			},
+		},
+		"session_not_found": {
+			IsError:  true,
+			Err:      custerr.ErrNotFound,
+			UserId:   userId1,
+			FamilyId: familyId1,
+			NewIp:    "10.0.0.1",
+			fnReady:  func() {},
+			fnCleanUp: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnCheckAfter: func() {},
+		},
+		"invalid_args": {
+			IsError:  true,
+			Err:      custerr.ErrBadArgs,
+			UserId:   uuid.Nil(),
+			FamilyId: uuid.Nil(),
+			NewIp:    "10.0.0.1",
+			fnReady:  func() {},
+			fnCleanUp: func() {
+				_, err := client.FlushDB(context.TODO()).Result()
+				if err != nil {
+					t.Fatalf("fail clear data base err:%v", err)
+				}
+			},
+			fnCheckAfter: func() {},
+		},
+	}
+
+	for name, val := range table {
+		t.Run(name, func(t *testing.T) {
+			val.fnReady()
+
+			err := sessionStore.UpdateIpAdress(context.Background(), val.UserId, val.FamilyId, val.NewIp)
+			if val.IsError {
+				if !val.Err.Is(err) {
+					t.Errorf("fail return error want:%v have:%v", val.Err, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("fail update ip err:%v", err)
+				}
+
+				if val.fnCheckAfter != nil {
+					val.fnCheckAfter()
+				}
+			}
+
+			val.fnCleanUp()
+		})
+	}
+}
+
+func loadRedisClient() (*redis.Client, error) {
+
+	util.LoadEnvFile()
+
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
+	redisConfig := cm.Get().RedisConf
+
+	client := redis.NewClient(&redis.Options{
+		Addr: fmt.Sprintf("%s:%s", redisConfig.Host, redisConfig.Port),
+		DB:   redisConfig.DbNum,
+
+		Password: redisConfig.Password,
+
+		PoolSize:        redisConfig.PoolSize,
+		MinIdleConns:    redisConfig.MinIdleConn,
+		MaxIdleConns:    redisConfig.MaxIdleConn,
+		ConnMaxIdleTime: time.Duration(redisConfig.ConnMaxIdleTime) * time.Minute,
+		ConnMaxLifetime: time.Duration(redisConfig.ConnMaxLifetime) * time.Minute,
+
+		DialTimeout:  time.Duration(redisConfig.DialTimeout) * time.Second,
+		ReadTimeout:  time.Duration(redisConfig.ReadTimeout) * time.Second,
+		WriteTimeout: time.Duration(redisConfig.WriteTimeout) * time.Second,
+		PoolTimeout:  time.Duration(redisConfig.PoolTimeout) * time.Second,
+	})
+
+	if _, err := client.Ping(context.TODO()).Result(); err != nil {
+		return nil, err
+	}
+
+	return client, nil
+}
+
+func loadAndGetSessionStore() (*reporedis.SessionStore, error) {
+	ctx := context.Background()
+	util.LoadEnvFile()
+
+	cm := config.NewConfigManager()
+
+	cm.Init(ctx, "")
+
+	repo, err := reporedis.NewRepository(ctx, cm)
+	if err != nil {
+		return nil, fmt.Errorf("Failed connect in redis %v\n", err)
+	}
+
+	au := domain.GetMockAuditService()
+	ss := reporedis.NewSessionStore(repo, au, 60*time.Minute, cm)
+
+	return ss, nil
 }

@@ -243,7 +243,7 @@ func (sst *SessionStore) GetAllSession(ctx context.Context, userId uuid.UUID) ([
 	return result, nil
 }
 
-func (sst *SessionStore) GetSessionByFamilyId(ctx context.Context, userId uuid.UUID, familyId uuid.UUID) (*dm.Session, error) {
+func (sst *SessionStore) GetSessionByFamilyId(ctx context.Context, userId, familyId uuid.UUID) (*dm.Session, error) {
 
 	traceId, ok := ctx.Value(dm.TraceKey).(string)
 	if !ok {
@@ -310,7 +310,7 @@ func (sst *SessionStore) GetSessionByFamilyId(ctx context.Context, userId uuid.U
 	return session, nil
 }
 
-func (sst *SessionStore) CreateGracePeriodic(ctx context.Context, userId uuid.UUID, familyId uuid.UUID, gracePeriodic dm.GracePeriodic) error {
+func (sst *SessionStore) CreateGracePeriodic(ctx context.Context, userId, familyId uuid.UUID, gracePeriodic dm.GracePeriodic) error {
 
 	errBadArgs := custerr.ErrBadArgs.Clone()
 	if userId == uuid.Nil() {
@@ -370,7 +370,7 @@ func (sst *SessionStore) CreateGracePeriodic(ctx context.Context, userId uuid.UU
 	return err
 }
 
-func (sst *SessionStore) GetFromGracePeriodic(ctx context.Context, userId uuid.UUID, familyId uuid.UUID, version string) (string, string, error) {
+func (sst *SessionStore) GetFromGracePeriodic(ctx context.Context, userId, familyId uuid.UUID, version string) (string, string, error) {
 
 	errBadArgs := custerr.ErrBadArgs.Clone()
 	if userId == uuid.Nil() {
@@ -436,8 +436,69 @@ func (sst *SessionStore) GetFromGracePeriodic(ctx context.Context, userId uuid.U
 	return access, refresh, nil
 }
 
-// TODO
-// add new function for update ip adress
+func (sst *SessionStore) UpdateIpAdress(ctx context.Context, userId, familyId uuid.UUID, ip string) error {
+
+	errBadArgs := custerr.ErrBadArgs.Clone()
+	if userId == uuid.Nil() {
+		errBadArgs.Fields = append(errBadArgs.Fields, "user_id")
+	}
+	if familyId == uuid.Nil() {
+		errBadArgs.Fields = append(errBadArgs.Fields, "family_id")
+	}
+	if ip == "" {
+		errBadArgs.Fields = append(errBadArgs.Fields, "ip")
+	}
+
+	if len(errBadArgs.Fields) > 0 {
+		return errBadArgs
+	}
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
+
+	hexUserId := hex.EncodeToString(userId[:])
+	hexFamilyId := hex.EncodeToString(familyId[:])
+	sessionKey := makeKey(RefreshKey, hexUserId, hexFamilyId)
+
+	err := sst.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
+
+		exists, err := client.Exists(ctx, sessionKey).Result()
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventUpdateSessionIPFailed, dm.EventPlaceRedis,
+				&strerr, hexUserId, traceId)
+			sst.audit.Log(ctx, event)
+			return err
+		}
+
+		if exists == 0 {
+			return custerr.ErrNotFound
+		}
+
+		_, err = client.HSet(ctx, sessionKey, FieldIp, ip).Result()
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventUpdateSessionIPFailed, dm.EventPlaceRedis,
+				&strerr, hexUserId, traceId)
+			sst.audit.Log(ctx, event)
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	event := dm.NewSuccessEvent(dm.EventUpdateSessionIPSuccess, dm.EventPlaceRedis,
+		hexUserId, traceId)
+	sst.audit.Log(ctx, event)
+
+	return nil
+}
 
 func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 
@@ -503,7 +564,7 @@ func (sst *SessionStore) DeleteAll(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id uuid.UUID, familyId uuid.UUID) error {
+func (sst *SessionStore) DeleteByRefresh(ctx context.Context, id, familyId uuid.UUID) error {
 
 	traceId, ok := ctx.Value(dm.TraceKey).(string)
 	if !ok {

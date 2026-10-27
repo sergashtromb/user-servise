@@ -27,6 +27,9 @@ const (
 	EventUpdateVersionTokenSuccess      EventType = "update_version_token_success"
 	EventUpdateVersionTokenFailed       EventType = "update_version_token_failed"
 
+	EventUpdateSessionIPSuccess EventType = "update_session_ip_success"
+	EventUpdateSessionIPFailed  EventType = "update_session_ip_failed"
+
 	EventLoginSucces EventType = "login_succes"
 	EventLoginFailed EventType = "login_failed"
 
