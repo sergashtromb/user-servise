@@ -348,12 +348,14 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 
 	key1 := uuid.NewV7()
 	key2 := uuid.NewV7()
+	familyId2 := uuid.NewV7()
 
 	table := []struct {
 		Name     string
 		Comm     string
 		IsError  bool
 		UserId   uuid.UUID
+		FamilyId uuid.UUID
 		DeviceId string
 		Agent    string
 		Access   middleware.AccessToken
@@ -364,6 +366,7 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 			Comm:     "should return error",
 			IsError:  true,
 			UserId:   key1,
+			FamilyId: uuid.Nil(),
 			DeviceId: "",
 			Agent:    "",
 			Access:   middleware.AccessToken{},
@@ -374,10 +377,12 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 			Comm:     "after converting field should be equal",
 			IsError:  false,
 			UserId:   key2,
+			FamilyId: familyId2,
 			DeviceId: "123456",
 			Agent:    "chrome",
 			Access: middleware.AccessToken{
 				UserId:    key2,
+				FamilyId:  familyId2,
 				DeviceId:  "123456",
 				Agent:     "chrome",
 				TokenType: middleware.AccessTokenType,
@@ -391,6 +396,7 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 			},
 			Refresh: middleware.RefreshToken{
 				UserId:    key2,
+				FamilyId:  familyId2,
 				TokenType: middleware.RefreshTokenType,
 				RegisteredClaims: jwt.RegisteredClaims{
 					ID:        uuid.New().String(),
@@ -406,7 +412,7 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 	for _, val := range table {
 
 		t.Run(val.Name, func(t *testing.T) {
-			access, refresh, err := middleware.GeneratePairToken(val.UserId, val.DeviceId, val.Agent, cm)
+			access, refresh, err := middleware.GeneratePairToken(val.UserId, val.FamilyId, val.DeviceId, val.Agent, cm)
 			if val.IsError {
 				if err == nil {
 					t.Errorf("fail generate pair token should return error")
@@ -435,7 +441,7 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 				t.Errorf("fail generate token access dont valid")
 			}
 
-			if claim.TokenType != val.Access.TokenType || claim.DeviceId != val.Access.DeviceId ||
+			if claim.TokenType != val.Access.TokenType || claim.FamilyId != val.Access.FamilyId || claim.DeviceId != val.Access.DeviceId ||
 				claim.Agent != val.Access.Agent || claim.UserId != val.Access.UserId {
 				t.Errorf("fail generate token access field dont equal")
 			}
@@ -457,7 +463,7 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 				t.Errorf("fail generate token refresh dont valid")
 			}
 
-			if claimRef.TokenType != val.Refresh.TokenType || claimRef.UserId != val.Refresh.UserId {
+			if claimRef.TokenType != val.Refresh.TokenType || claimRef.FamilyId != val.Refresh.FamilyId || claimRef.UserId != val.Refresh.UserId {
 				t.Errorf("fail generate token refresh field dont equal")
 			}
 
@@ -490,6 +496,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 		IsError      bool
 		CustomGen    bool
 		UserId       uuid.UUID
+		FamilyId     uuid.UUID
 		DeviceId     string
 		Agent        string
 		IssueAt      time.Time
@@ -504,6 +511,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			IsError:      false,
 			CustomGen:    false,
 			UserId:       uuid.NewV7(),
+			FamilyId:     uuid.NewV7(),
 			DeviceId:     "12345",
 			Agent:        "chrome",
 			IssueAt:      time.Now(),
@@ -518,6 +526,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    false,
 			UserId:       uuid.NewV7(),
+			FamilyId:     uuid.NewV7(),
 			DeviceId:     "12345",
 			Agent:        "chrome",
 			IssueAt:      time.Now().Add(-20 * time.Minute),
@@ -532,6 +541,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    true,
 			UserId:       uuid.NewV7(),
+			FamilyId:     uuid.NewV7(),
 			DeviceId:     "12345",
 			Agent:        "",
 			IssueAt:      time.Now(),
@@ -546,6 +556,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    false,
 			UserId:       uuid.NewV7(),
+			FamilyId:     uuid.NewV7(),
 			DeviceId:     "12345",
 			Agent:        "chrome",
 			IssueAt:      time.Now().Add(15 * time.Minute),
@@ -560,6 +571,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    false,
 			UserId:       uuid.NewV7(),
+			FamilyId:     uuid.NewV7(),
 			DeviceId:     "12345",
 			Agent:        "chrome",
 			IssueAt:      time.Now(),
@@ -574,6 +586,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    false,
 			UserId:       uuid.Nil(),
+			FamilyId:     uuid.Nil(),
 			DeviceId:     "",
 			Agent:        "",
 			IssueAt:      time.Now(),
@@ -590,7 +603,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 
 			var accessToken string
 			if !val.CustomGen {
-				accessStr := middleware.NewAccessToken(val.UserId, val.DeviceId, val.Agent,
+				accessStr := middleware.NewAccessToken(val.UserId, val.FamilyId, val.DeviceId, val.Agent,
 					cm.Get().TokenConf.AccessLifeTime)
 				accessStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
 				accessStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssueAt)
@@ -670,6 +683,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 		IsError      bool
 		CustomGen    bool
 		UserId       uuid.UUID
+		FamilyId     uuid.UUID
 		DeviceId     string
 		Agent        string
 		IssueAt      time.Time
@@ -684,6 +698,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			IsError:      false,
 			CustomGen:    false,
 			UserId:       uuid.NewV7(),
+			FamilyId:     uuid.NewV7(),
 			DeviceId:     "12345",
 			Agent:        "chrome",
 			IssueAt:      time.Now(),
@@ -698,6 +713,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    false,
 			UserId:       uuid.NewV7(),
+			FamilyId:     uuid.NewV7(),
 			DeviceId:     "12345",
 			Agent:        "chrome",
 			IssueAt:      time.Now().Add(-20 * time.Minute),
@@ -712,6 +728,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    true,
 			UserId:       uuid.Nil(),
+			FamilyId:     uuid.Nil(),
 			DeviceId:     "",
 			Agent:        "",
 			IssueAt:      time.Now(),
@@ -726,6 +743,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    false,
 			UserId:       uuid.NewV7(),
+			FamilyId:     uuid.NewV7(),
 			DeviceId:     "12345",
 			Agent:        "chrome",
 			IssueAt:      time.Now().Add(15 * time.Minute),
@@ -740,6 +758,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    false,
 			UserId:       uuid.NewV7(),
+			FamilyId:     uuid.NewV7(),
 			DeviceId:     "12345",
 			Agent:        "chrome",
 			IssueAt:      time.Now(),
@@ -754,6 +773,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			IsError:      true,
 			CustomGen:    false,
 			UserId:       uuid.Nil(),
+			FamilyId:     uuid.Nil(),
 			DeviceId:     "",
 			Agent:        "",
 			IssueAt:      time.Now(),
@@ -770,7 +790,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 
 			var refreshToken string
 			if !val.CustomGen {
-				refreshStr := middleware.NewRefreshToken(val.UserId, cm.Get().TokenConf.RefreshLifeTime)
+				refreshStr := middleware.NewRefreshToken(val.UserId, val.FamilyId, cm.Get().TokenConf.RefreshLifeTime)
 				refreshStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
 				refreshStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssueAt)
 
@@ -857,14 +877,13 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 	handler = authMiddl.CheckInboxAccessToken(handler)
 
 	id1 := uuid.NewV7()
-	trueSession := []domain.Session{
-		{
-			UserId:    id1,
-			DeviceId:  "12345",
-			Agent:     "chrome",
-			Ip:        "1.1.1.1",
-			CreatedAt: time.Now().Add(-20 * time.Hour),
-		},
+	familyId1 := uuid.NewV7()
+	trueSession := domain.Session{
+		UserId:    id1,
+		DeviceId:  "12345",
+		Agent:     "chrome",
+		Ip:        "1.1.1.1",
+		CreatedAt: time.Now().Add(-20 * time.Hour),
 	}
 
 	table := []struct {
@@ -872,6 +891,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 		Comm            string
 		IsError         bool
 		UserId          uuid.UUID
+		FamilyId        uuid.UUID
 		DeviceId        string
 		Agent           string
 		Exp             time.Time
@@ -880,7 +900,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 		IpReq           string
 		AgentReq        string
 		DeviceIdReq     string
-		Sessions        []domain.Session
+		Sessions        *domain.Session
 		MethodMustCall  []string
 		MethodNoCall    []string
 		fnSetUpMock     func()
@@ -891,27 +911,20 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Comm:           "shoudl return 200 ok",
 			IsError:        false,
 			UserId:         id1,
+			FamilyId:       familyId1,
 			DeviceId:       "12345",
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
 			Iss:            middleware.Issuer,
 			IpReq:          "1.1.1.1:1234",
-			MethodMustCall: []string{"GetAllSession"},
+			MethodMustCall: []string{"GetSessionByFamilyId"},
 			MethodNoCall:   []string{},
-			Sessions: []domain.Session{
-				{
-					UserId:    id1,
-					DeviceId:  "12345",
-					Agent:     "chrome",
-					Ip:        "1.1.1.1",
-					CreatedAt: time.Now().Add(-5 * time.Hour),
-				},
-			},
+			Sessions:       &trueSession,
 			fnSetUpMock: func() {
 				resetMock(&sessionStoreMock.Mock, t)
-				sessionStoreMock.On("GetAllSession", context.Background(), id1).
-					Return(trueSession, nil).
+				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
+					Return(&trueSession, nil).
 					Once()
 			},
 			fnGetRespResult: func() *ResponseResult {
@@ -929,19 +942,17 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Comm:           "shoudl return 401 auth token empty",
 			IsError:        true,
 			UserId:         uuid.Nil(),
+			FamilyId:       uuid.Nil(),
 			DeviceId:       "12345",
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
 			Iss:            middleware.Issuer,
 			MethodMustCall: []string{},
-			MethodNoCall:   []string{"GetAllSession"},
-			Sessions:       trueSession,
+			MethodNoCall:   []string{"GetSessionByFamilyId"},
+			Sessions:       nil,
 			fnSetUpMock: func() {
 				resetMock(&sessionStoreMock.Mock, t)
-				sessionStoreMock.On("GetAllSession", context.Background(), id1).
-					Return(trueSession, nil).
-					Once()
 			},
 			fnGetRespResult: func() *ResponseResult {
 
@@ -971,6 +982,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Comm:           "should return 401 with code token_expired",
 			IsError:        true,
 			UserId:         id1,
+			FamilyId:       familyId1,
 			DeviceId:       "12345",
 			Agent:          "chrome",
 			Exp:            time.Now().Add(-5 * time.Minute),
@@ -979,14 +991,11 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
-			Sessions:       trueSession,
+			Sessions:       &trueSession,
 			MethodMustCall: []string{},
-			MethodNoCall:   []string{"GetAllSession"},
+			MethodNoCall:   []string{"GetSessionByFamilyId"},
 			fnSetUpMock: func() {
 				resetMock(&sessionStoreMock.Mock, t)
-				sessionStoreMock.On("GetAllSession", context.Background(), id1).
-					Return(trueSession, nil).
-					Once()
 
 			},
 			fnGetRespResult: func() *ResponseResult {
@@ -1017,6 +1026,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Comm:           "should return 401 invalid token",
 			IsError:        true,
 			UserId:         id1,
+			FamilyId:       familyId1,
 			DeviceId:       "12345",
 			Agent:          "",
 			Exp:            time.Now().Add(15 * time.Minute),
@@ -1025,7 +1035,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
-			Sessions:       trueSession,
+			Sessions:       &trueSession,
 			MethodMustCall: []string{},
 			MethodNoCall:   []string{},
 			fnSetUpMock: func() {
@@ -1059,6 +1069,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Comm:           "should return 401 dont reg session",
 			IsError:        true,
 			UserId:         id1,
+			FamilyId:       familyId1,
 			DeviceId:       "12345",
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
@@ -1067,13 +1078,13 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "3.3.3.3:1234",
 			AgentReq:       "Safari",
 			DeviceIdReq:    "54321",
-			Sessions:       trueSession,
-			MethodMustCall: []string{"GetAllSession"},
+			Sessions:       &trueSession,
+			MethodMustCall: []string{"GetSessionByFamilyId"},
 			MethodNoCall:   []string{},
 			fnSetUpMock: func() {
 				resetMock(&sessionStoreMock.Mock, t)
-				sessionStoreMock.On("GetAllSession", context.Background(), id1).
-					Return(trueSession, nil).
+				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
+					Return(&trueSession, nil).
 					Once()
 			},
 			fnGetRespResult: func() *ResponseResult {
@@ -1104,6 +1115,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Comm:           "should return 401 dont reg session",
 			IsError:        true,
 			UserId:         id1,
+			FamilyId:       familyId1,
 			DeviceId:       "12345",
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
@@ -1112,13 +1124,13 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "3.3.3.3:1234",
 			AgentReq:       "Safari",
 			DeviceIdReq:    "54321",
-			Sessions:       []domain.Session{},
-			MethodMustCall: []string{"GetAllSession"},
+			Sessions:       nil,
+			MethodMustCall: []string{"GetSessionByFamilyId"},
 			MethodNoCall:   []string{},
 			fnSetUpMock: func() {
 				resetMock(&sessionStoreMock.Mock, t)
-				sessionStoreMock.On("GetAllSession", context.Background(), id1).
-					Return([]domain.Session{}, nil).
+				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
+					Return((*domain.Session)(nil), nil).
 					Once()
 			},
 			fnGetRespResult: func() *ResponseResult {
@@ -1149,6 +1161,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Comm:           "should return 500 try later",
 			IsError:        true,
 			UserId:         id1,
+			FamilyId:       familyId1,
 			DeviceId:       "12345",
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
@@ -1157,13 +1170,13 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
-			Sessions:       trueSession,
-			MethodMustCall: []string{"GetAllSession"},
+			Sessions:       &trueSession,
+			MethodMustCall: []string{"GetSessionByFamilyId"},
 			MethodNoCall:   []string{},
 			fnSetUpMock: func() {
 				resetMock(&sessionStoreMock.Mock, t)
-				sessionStoreMock.On("GetAllSession", context.Background(), id1).
-					Return(nil, errors.New("fail session store")).
+				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
+					Return((*domain.Session)(nil), errors.New("fail session store")).
 					Once()
 			},
 			fnGetRespResult: func() *ResponseResult {
@@ -1198,7 +1211,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			var tokenstr string
 
 			if val.UserId != uuid.Nil() {
-				accessStr := middleware.NewAccessToken(val.UserId, val.DeviceId, val.Agent,
+				accessStr := middleware.NewAccessToken(val.UserId, val.FamilyId, val.DeviceId, val.Agent,
 					cm.Get().TokenConf.AccessLifeTime)
 				accessStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
 				accessStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssAt)

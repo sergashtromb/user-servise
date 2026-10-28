@@ -59,17 +59,20 @@ func NewAuthMiddleware(au domain.AuditService, ss domain.SessionStore, repo doma
 	}
 }
 
+// FIXME add version field
 type AccessToken struct {
 	UserId    uuid.UUID `json:"user_id,omitempty"`
+	FamilyId  uuid.UUID `json:"family_id,omitempty"`
 	DeviceId  string    `json:"device_id,omitempty"`
 	Agent     string    `json:"agent,omitempty"`
 	TokenType TokenType `json:"token_type"`
 	jwt.RegisteredClaims
 }
 
-func NewAccessToken(userId uuid.UUID, deviceId, agent string, lifetime int) *AccessToken {
+func NewAccessToken(userId, familyId uuid.UUID, deviceId, agent string, lifetime int) *AccessToken {
 	return &AccessToken{
 		UserId:    userId,
+		FamilyId:  familyId,
 		DeviceId:  deviceId,
 		Agent:     agent,
 		TokenType: AccessTokenType,
@@ -83,15 +86,18 @@ func NewAccessToken(userId uuid.UUID, deviceId, agent string, lifetime int) *Acc
 	}
 }
 
+// FIXME add version field
 type RefreshToken struct {
 	UserId    uuid.UUID `json:"user_id,omitempty"`
+	FamilyId  uuid.UUID `json:"family_id,omitempty"`
 	TokenType TokenType `json:"token_type"`
 	jwt.RegisteredClaims
 }
 
-func NewRefreshToken(userId uuid.UUID, lifetime int) *RefreshToken {
+func NewRefreshToken(userId, familyId uuid.UUID, lifetime int) *RefreshToken {
 	return &RefreshToken{
 		UserId:    userId,
+		FamilyId:  familyId,
 		TokenType: RefreshTokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(lifetime) * time.Minute)),
@@ -103,11 +109,15 @@ func NewRefreshToken(userId uuid.UUID, lifetime int) *RefreshToken {
 	}
 }
 
-func GeneratePairToken(userId uuid.UUID, deviceId, agent string, cm *config.ConfigManager) (string, string, error) {
+func GeneratePairToken(userId, familyId uuid.UUID, deviceId, agent string, cm *config.ConfigManager) (string, string, error) {
 
 	errFE := ErrFieldEmpty.Clone()
 	if userId == uuid.Nil() {
 		errFE.Fields = append(errFE.Fields, "user_id")
+	}
+
+	if familyId == uuid.Nil() {
+		errFE.Fields = append(errFE.Fields, "family_id")
 	}
 
 	if deviceId == "" {
@@ -125,8 +135,8 @@ func GeneratePairToken(userId uuid.UUID, deviceId, agent string, cm *config.Conf
 	accessSecret := cm.Get().TokenConf.AccessBt
 	refreshSecret := cm.Get().TokenConf.RefreshBt
 
-	accessClaims := NewAccessToken(userId, deviceId, agent, cm.Get().TokenConf.AccessLifeTime)
-	refreshClaims := NewRefreshToken(userId, cm.Get().TokenConf.RefreshLifeTime)
+	accessClaims := NewAccessToken(userId, familyId, deviceId, agent, cm.Get().TokenConf.AccessLifeTime)
+	refreshClaims := NewRefreshToken(userId, familyId, cm.Get().TokenConf.RefreshLifeTime)
 
 	access := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	signedAccess, err := access.SignedString(accessSecret)
@@ -318,7 +328,8 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 			return
 		}
 
-		if tokenData.UserId == uuid.Nil() || tokenData.Agent == "" || tokenData.DeviceId == "" {
+		if tokenData.UserId == uuid.Nil() || tokenData.FamilyId == uuid.Nil() ||
+			tokenData.Agent == "" || tokenData.DeviceId == "" {
 			errBody := ErrBody{
 				Err:     "Unauthorized",
 				Code:    "TOKEN_INVALID",
@@ -330,7 +341,7 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 			return
 		}
 
-		sessions, err := am.sessionStore.GetAllSession(ctx, tokenData.UserId)
+		session, err := am.sessionStore.GetSessionByFamilyId(ctx, tokenData.UserId, tokenData.FamilyId)
 		if err != nil {
 			errBody := ErrBody{
 				Err:     "Internal Server Error",
@@ -341,7 +352,7 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 			return
 		}
 
-		if len(sessions) == 0 {
+		if session == nil {
 			errBody := ErrBody{
 				Err:     "Unauthorized",
 				Code:    "USER_NOT_FOUND",
@@ -381,24 +392,20 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 
 		agent := r.Header.Get(HeadUserAgent)
 		userId := tokenData.UserId
-		if ip == "" || deviceId == "" || agent == "" || userId == uuid.Nil() {
+		familyId := tokenData.FamilyId
+		if ip == "" || deviceId == "" || agent == "" || userId == uuid.Nil() || familyId == uuid.Nil() {
 			returnErrorSessionMiss(w, am.audit, traceId, ctx)
 			return
 		}
 
 		var finderSessHeader bool
 		var finderSessToken bool
-		for _, ss := range sessions {
-			if ss.UserId == userId && ss.Agent == agent && ss.DeviceId == deviceId && ss.Ip == ip {
-				finderSessHeader = true
-			}
-			if ss.UserId == userId && ss.Agent == tokenData.Agent && ss.DeviceId == tokenData.DeviceId {
-				finderSessToken = true
-			}
 
-			if finderSessHeader && finderSessToken {
-				break
-			}
+		if session.UserId == userId && session.Agent == agent && session.DeviceId == deviceId && session.Ip == ip {
+			finderSessHeader = true
+		}
+		if session.UserId == userId && session.Agent == tokenData.Agent && session.DeviceId == tokenData.DeviceId {
+			finderSessToken = true
 		}
 
 		if !finderSessHeader || !finderSessToken {
