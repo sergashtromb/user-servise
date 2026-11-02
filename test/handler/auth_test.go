@@ -1,7 +1,9 @@
 package test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +12,12 @@ import (
 	"user_service/config"
 	"user_service/domain"
 	"user_service/infrastructure/reporedis/custerr"
+	"user_service/infrastructure/tokens"
+	"user_service/initial/handler"
 	"user_service/initial/middleware"
 	"uuid"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -26,15 +31,18 @@ import (
 //	Tests:
 //			correct_create_window - корректный тест попытаяется получить с окна после сгененрирует токены и создаст окно после вернет их
 //			correct_get_from_window - корректный запрос который вернет пару токенов из окна
-//			req_param_dont_equal_param_tokens - параметры запроса не совпадают с параметрами токена которые прилетели вернет ошибку
+//			param_req_dont_equal_param_session - ситуация когда отправили корректный токен совпадающий с данными запроса, но не совпали по family id,
+//				странное поведение device id невозможно подделать если он создается как слепок устройства, возвращаем ошибку откатываем сессию
 //			window_closed - попытается получить данные из закрытого окна ситуация когда окно было только что закрыто а время с последнего
 //				обновления сейссии меньше чем время жизни access токена, значет токен был украден(повторная попытка сделать refresh)
 // 				или баг клиента логируем плюс откатываем сессию
 //			old_version - когда пришел запрос в котором слишком старая версия, либо баг клиента либо токен был украден но очень долго не отправлен
 //				странное поведение возвращаем ошибку откатываем сессию
-//			param_req_dont_equal_param_session - ситуация когда отправили корректный токен совпадающий с данными запроса, но не совпали по family id,
-//				странное поведение device id невозможно подделать если он создается как слепок устройства, возвращаем ошибку откатываем сессию
 //			refresh_expired - ситуация когда прислали просроченный refresh токен, просто возвращаем ошибку
+//			get_periodic_bad_data - ситуация когда при получении токенов из окна вернется ошибка битых данных
+//			get_periodic_ver_miss_data - ситуация когда при получении токенов из окна вернется ошибка промаха версии токенов
+//			empty_refresh_token - ситуация когда прислали токен на апдейт а он пустой
+//			invalid_grant_type - ситуация когда в теле при запросе grant_type не равен refresh_token
 
 type ResponseResult struct {
 	Code    int         `json:"code"`
@@ -44,7 +52,7 @@ type ResponseResult struct {
 
 func TestUpdateRefreshToken(t *testing.T) {
 
-	sessionStore := new(domain.SessionStoreMock)
+	sessionStore := domain.NewSessionStoreMock(t)
 	cm := config.NewConfigManager()
 	cm.Init(context.TODO(), "")
 
@@ -57,9 +65,30 @@ func TestUpdateRefreshToken(t *testing.T) {
 	deviceId1 := "12345"
 	deviceId2 := "58945"
 
-	access1, refresh1, _ := middleware.GeneratePairToken(userId1, familyId1, deviceId1, agent1, cm)
-	accessNew1, refreshNew1, _ := middleware.GeneratePairToken(userId1, familyId1, deviceId1, agent1, cm)
-	_, _, _ = middleware.GeneratePairToken(userId1, familyId2, deviceId2, agent2, cm)
+	tu := tokens.NewTokenUtil(cm)
+
+	_, refresh1, _ := tu.GeneratePairToken(userId1, familyId1, deviceId1, agent1)
+	accessNew1, refreshNew1, _ := tu.GeneratePairToken(userId1, familyId1, deviceId1, agent1)
+	_, _, _ = tu.GeneratePairToken(userId1, familyId2, deviceId2, agent2)
+
+	// expired refresh token
+	expiredRefreshClaims := &tokens.RefreshToken{
+		UserId:    userId1,
+		FamilyId:  familyId1,
+		TokenType: tokens.RefreshTokenType,
+		Version:   "jwt-1",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)),
+			Issuer:    tokens.Issuer,
+			IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
+			Subject:   userId1.String(),
+			ID:        uuid.New().String(),
+		},
+	}
+	expiredRefresh := jwt.NewWithClaims(jwt.SigningMethodHS256, expiredRefreshClaims)
+	expiredRefreshToken, _ := expiredRefresh.SignedString(cm.Get().TokenConf.RefreshBt)
+
+	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu)
 
 	session1 := domain.Session{
 		UserId:     userId1,
@@ -67,7 +96,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 		Agent:      agent1,
 		Ip:         "1.1.1.1",
 		CreatedAt:  time.Now().Add(-48 * time.Hour),
-		Version:    "jwt-10",
+		Version:    "jwt-1",
 		LastUpdate: time.Now().Add(-16 * time.Minute),
 	}
 
@@ -102,6 +131,8 @@ func TestUpdateRefreshToken(t *testing.T) {
 		RefreshToken string
 		// поля тела ответа
 		FieldBodyForCheck []string
+		// grant_type для отправки в запросе (по умолчанию refresh_token)
+		GrantType string
 		// методы которые должны быть вызваны в sessionStoreMock
 		MethodMustCall []string
 		// методы которые НЕ должны вызваться в sessionStoreMock
@@ -115,38 +146,30 @@ func TestUpdateRefreshToken(t *testing.T) {
 	}
 
 	checkMethods := func(methodMustCall, methodNoCall []string) {
+		// Собираем множество РЕАЛЬНО вызванных методов
+		called := make(map[string]struct{}, len(sessionStore.Calls))
+		for _, call := range sessionStore.Calls {
+			called[call.Method] = struct{}{}
+		}
 
-		for _, must := range methodMustCall {
-			found := false
-			for _, exp := range sessionStore.ExpectedCalls {
-				if exp.Method == must {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Errorf("method %s should have been mocked", must)
+		// Должны быть вызваны
+		for _, method := range methodMustCall {
+			if _, ok := called[method]; !ok {
+				t.Errorf("method %s was NOT called, but should have been", method)
 			}
 		}
 
-		// Verify excluded methods were NOT set up
-		for _, noCall := range methodNoCall {
-			found := false
-			for _, exp := range sessionStore.ExpectedCalls {
-				if exp.Method == noCall {
-					found = true
-					break
-				}
-			}
-			if found {
-				t.Errorf("method %s should NOT have been mocked", noCall)
+		// НЕ должны быть вызваны
+		for _, method := range methodNoCall {
+			if _, ok := called[method]; ok {
+				t.Errorf("method %s WAS called, but should NOT have been", method)
 			}
 		}
 	}
 
 	// TODO: заполнить таблицу тестов
 	table := map[string]TableTest{
-		"correct_create_window": TableTest{
+		"correct_create_window": {
 			Comm:              "корректный тест попытаяется получить с окна после сгененрирует токены и создаст окно после вернет их",
 			IsError:           false,
 			IpReq:             "1.1.1.1:5423",
@@ -161,7 +184,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
 					Return(&session1, nil).
 					Once()
-				sessionStore.On("GetFromGracePeriodic", context.Background(), userId1, familyId1, "jwt-11").
+				sessionStore.On("GetFromGracePeriodic", context.Background(), userId1, familyId1, "jwt-2").
 					Return("", "", custerr.ErrGracePeriodicNoExists).
 					Once()
 				sessionStore.On("CreateGracePeriodic", context.Background(), userId1, familyId1, mock.Anything).
@@ -193,7 +216,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 			},
 			fnCheckMethods: checkMethods,
 		},
-		"correct_get_from_window": TableTest{
+		"correct_get_from_window": {
 			Comm:              "корректный запрос который вернет пару токенов из окна",
 			IsError:           false,
 			IpReq:             "1.1.1.1:5423",
@@ -208,7 +231,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
 					Return(&session1, nil).
 					Once()
-				sessionStore.On("GetFromGracePeriodic", context.Background(), userId1, familyId1, "jwt-11").
+				sessionStore.On("GetFromGracePeriodic", context.Background(), userId1, familyId1, "jwt-2").
 					Return(accessNew1, refreshNew1, nil).
 					Once()
 			},
@@ -237,7 +260,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 			},
 			fnCheckMethods: checkMethods,
 		},
-		"req_param_dont_equal_param_tokens": TableTest{
+		"param_req_dont_equal_param_session": {
 			Comm:              "параметры запроса не совпадают с параметрами токена которые прилетели вернет ошибку",
 			IsError:           true,
 			IpReq:             "4.4.4.4:6532",
@@ -245,25 +268,28 @@ func TestUpdateRefreshToken(t *testing.T) {
 			AgentReq:          "mozila ios 10",
 			RefreshToken:      refresh1,
 			FieldBodyForCheck: []string{"error", "error_description"},
-			MethodMustCall:    []string{"DeleteByRefresh"},
-			MethodNoCall:      []string{"GetSessionByFamilyId", "GetFromGracePeriodic", "Registration", "GetAllSession", "DeleteAll", "DeleteByRefresh", "UpdateIpAdress", "CreateGracePeriodic"},
+			MethodMustCall:    []string{"GetSessionByFamilyId", "DeleteByRefresh"},
+			MethodNoCall:      []string{"GetFromGracePeriodic", "Registration", "GetAllSession", "DeleteAll", "UpdateIpAdress", "CreateGracePeriodic"},
 			fnSetUpMock: func() {
 				resetMock(&sessionStore.Mock, t)
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&session1, nil).
+					Once()
 				sessionStore.On("DeleteByRefresh", context.Background(), userId1, familyId1).
 					Return(nil).
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				bodyJson := `
-				{
-					"error": "invalid_grant",
-					"error_description": "Session context mismatch. Please log in again."
+				errBody := middleware.ErrBody{
+					Err:     "invalid_grant",
+					Code:    "SESSION_CONTEXT_MISMATCH",
+					Message: "Session context mismatch. Please log in again.",
 				}
-				`
+				bodyJson, _ := json.Marshal(errBody)
 				resp := httptest.NewRecorder()
 				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
 				resp.WriteHeader(http.StatusBadRequest)
-				resp.Write([]byte(bodyJson))
+				resp.Write(bodyJson)
 
 				return &ResponseResult{
 					Code:    resp.Code,
@@ -273,39 +299,45 @@ func TestUpdateRefreshToken(t *testing.T) {
 			},
 			fnCheckMethods: checkMethods,
 		},
-		"window_closed": TableTest{
+		"window_closed": {
 			Comm: `попытается получить данные из закрытого окна ситуация когда окно было только что закрыто а время с последнего
 						обновления сейссии меньше чем время жизни access токена, значет токен был украден(повторная попытка сделать refresh)
- 						или баг клиента логируем плюс откатываем сессию`,
+  						или баг клиента логируем плюс откатываем сессию`,
 			IsError:           true,
 			IpReq:             "1.1.1.1:5432",
 			DeviceIdReq:       deviceId1,
 			AgentReq:          agent1,
 			RefreshToken:      refresh1,
 			FieldBodyForCheck: []string{"error", "error_description"},
-			MethodMustCall:    []string{"GetSessionByFamilyId", "DeleteByRefresh"},
-			MethodNoCall:      []string{"GetFromGracePeriodic", "Registration", "GetAllSession", "DeleteAll", "DeleteByRefresh", "UpdateIpAdress", "CreateGracePeriodic"},
+			MethodMustCall:    []string{"GetSessionByFamilyId", "GetFromGracePeriodic", "CreateGracePeriodic", "DeleteByRefresh"},
+			MethodNoCall:      []string{"Registration", "GetAllSession", "DeleteAll", "UpdateIpAdress"},
+			fnCheckMethods:    checkMethods,
 			fnSetUpMock: func() {
 				resetMock(&sessionStore.Mock, t)
 				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
-					Return(&sessionLU1, nil).
+					Return(&session1, nil).
+					Once()
+				sessionStore.On("GetFromGracePeriodic", context.Background(), userId1, familyId1, "jwt-2").
+					Return("", "", custerr.ErrGracePeriodicNoExists).
+					Once()
+				sessionStore.On("CreateGracePeriodic", context.Background(), userId1, familyId1, mock.Anything).
+					Return(custerr.ErrSuspiciousRefreshRate).
 					Once()
 				sessionStore.On("DeleteByRefresh", context.Background(), userId1, familyId1).
 					Return(nil).
 					Once()
-
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				bodyJson := `
-				{
-					"error": "invalid_grant",
-					"error_description": "Token reuse detected. Session has been revoked."
+				errBody := middleware.ErrBody{
+					Err:     "invalid_grant",
+					Code:    "TOKEN_REUSE_DETECTED",
+					Message: "Token reuse detected. Session has been revoked.",
 				}
-				`
+				bodyJson, _ := json.Marshal(errBody)
 				resp := httptest.NewRecorder()
 				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
 				resp.WriteHeader(http.StatusBadRequest)
-				resp.Write([]byte(bodyJson))
+				resp.Write(bodyJson)
 
 				return &ResponseResult{
 					Code:    resp.Code,
@@ -314,8 +346,305 @@ func TestUpdateRefreshToken(t *testing.T) {
 				}
 			},
 		},
+		"old_version": {
+			Comm:              "когда пришел запрос в котором слишком старая версия",
+			IsError:           true,
+			IpReq:             "1.1.1.1:5432",
+			AgentReq:          agent1,
+			DeviceIdReq:       deviceId1,
+			RefreshToken:      refresh1,
+			FieldBodyForCheck: []string{"error", "error_description"},
+			MethodMustCall:    []string{"GetSessionByFamilyId", "DeleteByRefresh"},
+			MethodNoCall:      []string{"GetFromGracePeriodic", "Registration", "GetAllSession", "DeleteAll", "UpdateIpAdress", "CreateGracePeriodic"},
+			fnCheckMethods:    checkMethods,
+			fnSetUpMock: func() {
+				resetMock(&sessionStore.Mock, t)
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&sessionLU1, nil).
+					Once()
+				sessionStore.On("DeleteByRefresh", context.Background(), userId1, familyId1).
+					Return(nil).
+					Once()
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				errBody := middleware.ErrBody{
+					Err:     "invalid_grant",
+					Code:    "TOKEN_REUSE_DETECTED",
+					Message: "Token reuse detected. Session has been revoked.",
+				}
+				bodyJson, _ := json.Marshal(errBody)
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusBadRequest)
+				resp.Write(bodyJson)
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+		},
+		"refresh_expired": {
+			Comm:              "ситуация когда прислали просроченный refresh токен, просто возвращаем ошибку",
+			IsError:           true,
+			IpReq:             "1.1.1.1:5432",
+			DeviceIdReq:       deviceId1,
+			AgentReq:          agent1,
+			RefreshToken:      expiredRefreshToken,
+			FieldBodyForCheck: []string{"error", "error_description"},
+			MethodMustCall:    []string{},
+			MethodNoCall:      []string{"GetSessionByFamilyId", "GetFromGracePeriodic", "Registration", "GetAllSession", "DeleteAll", "UpdateIpAdress", "CreateGracePeriodic", "DeleteByRefresh"},
+			fnSetUpMock: func() {
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				errBody := middleware.ErrBody{
+					Err:     "invalid_grant",
+					Code:    "INVALID_GRANT",
+					Message: "The refresh token has expired. Please re-authenticate.",
+				}
+				bodyJson, _ := json.Marshal(errBody)
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusBadRequest)
+				resp.Write(bodyJson)
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"get_periodic_bad_data": {
+			Comm:              "GetFromGracePeriodic возвращает ошибку, возвращается 500",
+			IsError:           true,
+			IpReq:             "1.1.1.1:5432",
+			DeviceIdReq:       deviceId1,
+			AgentReq:          agent1,
+			RefreshToken:      refresh1,
+			FieldBodyForCheck: []string{"error", "error_description"},
+			MethodMustCall:    []string{"GetSessionByFamilyId", "GetFromGracePeriodic"},
+			MethodNoCall:      []string{"CreateGracePeriodic", "DeleteByRefresh", "Registration", "GetAllSession", "DeleteAll", "UpdateIpAdress"},
+			fnSetUpMock: func() {
+				resetMock(&sessionStore.Mock, t)
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&session1, nil).
+					Once()
+				sessionStore.On("GetFromGracePeriodic", context.Background(), userId1, familyId1, "jwt-2").
+					Return("", "", custerr.ErrBadData).
+					Once()
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				errBody := middleware.ErrBody{
+					Err:     "Internal Server Error",
+					Code:    "AUTH_SERVICE_ERROR",
+					Message: "Authentication service is temporarily unavailable. Please try again later.",
+				}
+				bodyJson, _ := json.Marshal(errBody)
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusInternalServerError)
+				resp.Write(bodyJson)
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"get_periodic_ver_miss_data": {
+			Comm:              "GetFromGracePeriodic возвращает ошибку, возвращается 500",
+			IsError:           true,
+			IpReq:             "1.1.1.1:5432",
+			DeviceIdReq:       deviceId1,
+			AgentReq:          agent1,
+			RefreshToken:      refresh1,
+			FieldBodyForCheck: []string{"error", "error_description"},
+			MethodMustCall:    []string{"GetSessionByFamilyId", "GetFromGracePeriodic"},
+			MethodNoCall:      []string{"CreateGracePeriodic", "DeleteByRefresh", "Registration", "GetAllSession", "DeleteAll", "UpdateIpAdress"},
+			fnSetUpMock: func() {
+				resetMock(&sessionStore.Mock, t)
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&session1, nil).
+					Once()
+				sessionStore.On("GetFromGracePeriodic", context.Background(), userId1, familyId1, "jwt-2").
+					Return("", "", custerr.ErrGracePeriodicVersionMiss).
+					Once()
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				errBody := middleware.ErrBody{
+					Err:     "Internal Server Error",
+					Code:    "AUTH_SERVICE_ERROR",
+					Message: "Authentication service is temporarily unavailable. Please try again later.",
+				}
+				bodyJson, _ := json.Marshal(errBody)
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusInternalServerError)
+				resp.Write(bodyJson)
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"empty_refresh_token": {
+			Comm:              "refresh_token пустой, возвращается ошибка 400",
+			IsError:           true,
+			IpReq:             "1.1.1.1:5432",
+			DeviceIdReq:       deviceId1,
+			AgentReq:          agent1,
+			RefreshToken:      "",
+			FieldBodyForCheck: []string{"error", "error_description"},
+			MethodMustCall:    []string{},
+			MethodNoCall:      []string{"GetSessionByFamilyId", "GetFromGracePeriodic", "CreateGracePeriodic", "DeleteByRefresh", "Registration", "GetAllSession", "DeleteAll", "UpdateIpAdress"},
+			fnSetUpMock: func() {
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				errBody := middleware.ErrBody{
+					Err:     "invalid_request",
+					Code:    "INVALID_REQUEST",
+					Message: "refresh_token is required",
+				}
+				bodyJson, _ := json.Marshal(errBody)
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusBadRequest)
+				resp.Write(bodyJson)
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"invalid_grant_type": {
+			Comm:              "grant_type не равен refresh_token, возвращается ошибка 400",
+			IsError:           true,
+			IpReq:             "1.1.1.1:5432",
+			DeviceIdReq:       deviceId1,
+			AgentReq:          agent1,
+			RefreshToken:      refresh1,
+			GrantType:         "invalid",
+			FieldBodyForCheck: []string{"error", "error_description"},
+			MethodMustCall:    []string{},
+			MethodNoCall:      []string{"GetSessionByFamilyId", "GetFromGracePeriodic", "CreateGracePeriodic", "DeleteByRefresh", "Registration", "GetAllSession", "DeleteAll", "UpdateIpAdress"},
+			fnSetUpMock: func() {
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				errBody := middleware.ErrBody{
+					Err:     "bad request",
+					Code:    "BAD_REQUEST",
+					Message: "grant_type must be refresh_token.",
+				}
+				bodyJson, _ := json.Marshal(errBody)
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusBadRequest)
+				resp.Write(bodyJson)
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+			fnCheckMethods: checkMethods,
+		},
 	}
-	_ = table
+
+	for name, val := range table {
+
+		t.Run(name, func(t *testing.T) {
+
+			val.fnSetUpMock()
+
+			grantType := val.GrantType
+			if grantType == "" {
+				grantType = "refresh_token"
+			}
+			bodyStr := fmt.Sprintf("grant_type=%s&refresh_token=%v", grantType, val.RefreshToken)
+
+			testReq := httptest.NewRequest("POST", "/refresh", bytes.NewBufferString(bodyStr))
+			testReq.RemoteAddr = val.IpReq
+			testReq.Header.Set("User-Agent", val.AgentReq)
+			testReq.Header.Set("Device-Id", val.DeviceIdReq)
+			testReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+			rec := httptest.NewRecorder()
+
+			authHandler.UpdateRefreshToken(rec, testReq)
+
+			mustResp := val.fnReadyAnswer()
+
+			if mustResp.Code != rec.Code {
+				t.Errorf("fail http status code dont equal want %v have %v", mustResp.Code, rec.Code)
+			}
+
+			if len(mustResp.Body) > 0 {
+
+				if val.IsError {
+
+					var mustErrBody middleware.ErrBody
+					err := json.Unmarshal(mustResp.Body, &mustErrBody)
+					if err != nil {
+						t.Fatalf("unmarshal json must %v", err)
+					}
+
+					var outErrBody middleware.ErrBody
+					err = json.Unmarshal(rec.Body.Bytes(), &outErrBody)
+					if err != nil {
+						t.Fatalf("unmarshal json out %v", err)
+					}
+
+					if mustErrBody.Err != outErrBody.Err || mustErrBody.Code != outErrBody.Code ||
+						mustErrBody.Message != outErrBody.Message {
+						t.Errorf("fail http body dont equal want %+v have %+v", mustErrBody, outErrBody)
+					}
+				} else {
+					var data map[string]any
+					err := json.Unmarshal(mustResp.Body, &data)
+					if err != nil {
+						t.Fatalf("unmarshal json must %v", err)
+					}
+
+					var outdata map[string]any
+					err = json.Unmarshal(rec.Body.Bytes(), &outdata)
+					if err != nil {
+						t.Fatalf("unmarshal json out %v", err)
+					}
+
+					if data["token_type"] != outdata["token_type"] || data["expires_in"] != outdata["expires_in"] {
+						t.Errorf("fail http body dont equal")
+					}
+				}
+			}
+
+			errHeaderAuth := mustResp.Headers.Get("WWW-Authenticate")
+			if errHeaderAuth != "" {
+				respHead := rec.Header().Get("WWW-Authenticate")
+				if errHeaderAuth != respHead {
+					t.Errorf("fail http auth header dont equal want %v have %v", errHeaderAuth, respHead)
+				}
+			}
+
+			val.fnCheckMethods(val.MethodMustCall, val.MethodNoCall)
+
+		})
+
+	}
 
 }
 

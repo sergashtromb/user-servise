@@ -19,7 +19,7 @@ type SessionStore interface {
 	GetAllSession(ctx context.Context, userId uuid.UUID) ([]Session, error)
 	GetSessionByFamilyId(ctx context.Context, userId, familyId uuid.UUID) (*Session, error)
 	DeleteAll(ctx context.Context, id uuid.UUID) error
-	DeleteByRefresh(ctx context.Context, id uuid.UUID, refresh string) error
+	DeleteByRefresh(ctx context.Context, id uuid.UUID, refresh uuid.UUID) error
 	CreateGracePeriodic(ctx context.Context, userId, familyId uuid.UUID, gracePeriodic *GracePeriodic) error
 	GetFromGracePeriodic(ctx context.Context, userId, familyId uuid.UUID, version string) (string, string, error)
 	UpdateIpAdress(ctx context.Context, userId, familyId uuid.UUID, ip string) error

@@ -3,26 +3,16 @@ package middleware
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/http"
 	"strings"
-	"time"
 	"user_service/config"
 	"user_service/domain"
-	"user_service/pkg/repoerrors"
+	"user_service/infrastructure/tokens"
 	"uuid"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
-type TokenType = string
-
 const (
-	AccessTokenType  TokenType = "access"
-	RefreshTokenType TokenType = "refresh"
-
-	Issuer   = "user-service"
 	RepoName = "AUTH_MIDDLEWARE"
 
 	HeadAuthorization   = "Authorization"
@@ -34,246 +24,23 @@ const (
 	ValHeadBearer  = "Bearer"
 )
 
-var (
-	ErrFieldEmpty       = repoerrors.NewError(RepoName, "important field is empty", "001")
-	ErrExpToken         = repoerrors.NewError(RepoName, "token has expired", "002")
-	ErrInvalidToken     = repoerrors.NewError(RepoName, "invalid token", "003")
-	ErrFutureDateToken  = repoerrors.NewError(RepoName, "token with a future date", "004")
-	ErrInvalidSignToken = repoerrors.NewError(RepoName, "invalid token signature", "005")
-)
-
 type AuthMiddleware struct {
 	audit        domain.AuditService
 	sessionStore domain.SessionStore
 	repo         domain.UserStore
 	cm           *config.ConfigManager
+	tu           *tokens.TokenUtil
 }
 
 func NewAuthMiddleware(au domain.AuditService, ss domain.SessionStore, repo domain.UserStore,
-	cm *config.ConfigManager) *AuthMiddleware {
+	cm *config.ConfigManager, tu *tokens.TokenUtil) *AuthMiddleware {
 	return &AuthMiddleware{
 		audit:        au,
 		sessionStore: ss,
 		repo:         repo,
 		cm:           cm,
+		tu:           tu,
 	}
-}
-
-// FIXME add version field
-type AccessToken struct {
-	UserId    uuid.UUID `json:"user_id,omitempty"`
-	FamilyId  uuid.UUID `json:"family_id,omitempty"`
-	DeviceId  string    `json:"device_id,omitempty"`
-	Agent     string    `json:"agent,omitempty"`
-	TokenType TokenType `json:"token_type"`
-	jwt.RegisteredClaims
-}
-
-func NewAccessToken(userId, familyId uuid.UUID, deviceId, agent string, lifetime int) *AccessToken {
-	return &AccessToken{
-		UserId:    userId,
-		FamilyId:  familyId,
-		DeviceId:  deviceId,
-		Agent:     agent,
-		TokenType: AccessTokenType,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(lifetime) * time.Minute)),
-			Issuer:    Issuer,
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Subject:   userId.String(),
-			ID:        uuid.New().String(),
-		},
-	}
-}
-
-// FIXME add version field
-type RefreshToken struct {
-	UserId    uuid.UUID `json:"user_id,omitempty"`
-	FamilyId  uuid.UUID `json:"family_id,omitempty"`
-	TokenType TokenType `json:"token_type"`
-	jwt.RegisteredClaims
-}
-
-func NewRefreshToken(userId, familyId uuid.UUID, lifetime int) *RefreshToken {
-	return &RefreshToken{
-		UserId:    userId,
-		FamilyId:  familyId,
-		TokenType: RefreshTokenType,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(lifetime) * time.Minute)),
-			Issuer:    Issuer,
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Subject:   userId.String(),
-			ID:        uuid.New().String(),
-		},
-	}
-}
-
-func GeneratePairToken(userId, familyId uuid.UUID, deviceId, agent string, cm *config.ConfigManager) (string, string, error) {
-
-	errFE := ErrFieldEmpty.Clone()
-	if userId == uuid.Nil() {
-		errFE.Fields = append(errFE.Fields, "user_id")
-	}
-
-	if familyId == uuid.Nil() {
-		errFE.Fields = append(errFE.Fields, "family_id")
-	}
-
-	if deviceId == "" {
-		errFE.Fields = append(errFE.Fields, "device_id")
-	}
-
-	if agent == "" {
-		errFE.Fields = append(errFE.Fields, "agent")
-	}
-
-	if len(errFE.Fields) > 0 {
-		return "", "", errFE
-	}
-
-	accessSecret := cm.Get().TokenConf.AccessBt
-	refreshSecret := cm.Get().TokenConf.RefreshBt
-
-	accessClaims := NewAccessToken(userId, familyId, deviceId, agent, cm.Get().TokenConf.AccessLifeTime)
-	refreshClaims := NewRefreshToken(userId, familyId, cm.Get().TokenConf.RefreshLifeTime)
-
-	access := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	signedAccess, err := access.SignedString(accessSecret)
-	if err != nil {
-		return "", "", err
-	}
-
-	refresh := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	signedRefresh, err := refresh.SignedString(refreshSecret)
-	if err != nil {
-		return "", "", err
-	}
-
-	return signedAccess, signedRefresh, nil
-}
-
-func (am *AuthMiddleware) ValidAccessToken(token string) (*AccessToken, error) {
-
-	errFE := ErrFieldEmpty.Clone()
-	if token == "" {
-		errFE.Fields = append(errFE.Fields, "token")
-		return nil, errFE
-	}
-
-	data, err := jwt.ParseWithClaims(token,
-		&AccessToken{},
-		func(t *jwt.Token) (any, error) {
-			return am.cm.Get().TokenConf.AccessBt, nil
-		},
-		jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithIssuer(Issuer),
-		jwt.WithExpirationRequired())
-
-	if err != nil {
-		if errors.Is(err, jwt.ErrTokenExpired) {
-			return nil, ErrExpToken
-		} else if errors.Is(err, jwt.ErrTokenSignatureInvalid) {
-			return nil, ErrInvalidSignToken
-		} else if errors.Is(err, jwt.ErrTokenInvalidClaims) {
-			return nil, ErrInvalidToken
-		}
-		return nil, err
-	}
-
-	tokenData, ok := data.Claims.(*AccessToken)
-	if !ok || !data.Valid {
-		return nil, ErrInvalidToken
-	}
-
-	isAt := tokenData.RegisteredClaims.IssuedAt.Time
-
-	if isAt.After(time.Now()) {
-		return nil, ErrFutureDateToken
-	}
-
-	return tokenData, nil
-}
-
-func (am *AuthMiddleware) ValidRefreshToken(token string) error {
-
-	tokenData, err := am.ValidRefreshTokenWithClaims(token)
-	if err != nil {
-		return err
-	}
-
-	isAt := tokenData.RegisteredClaims.IssuedAt.Time
-
-	if isAt.After(time.Now()) {
-		return ErrFutureDateToken
-	}
-
-	return nil
-}
-
-func (am *AuthMiddleware) ValidRefreshTokenWithClaims(token string) (*RefreshToken, error) {
-
-	errFE := ErrFieldEmpty.Clone()
-	if token == "" {
-		errFE.Fields = append(errFE.Fields, "token")
-		return nil, errFE
-	}
-
-	data, err := jwt.ParseWithClaims(token,
-		&RefreshToken{},
-		func(t *jwt.Token) (any, error) {
-			return am.cm.Get().TokenConf.RefreshBt, nil
-		},
-		jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithIssuer(Issuer),
-		jwt.WithExpirationRequired())
-
-	if err != nil {
-		if errors.Is(err, jwt.ErrTokenExpired) {
-			return nil, ErrExpToken
-		} else if errors.Is(err, jwt.ErrTokenSignatureInvalid) {
-			return nil, ErrInvalidSignToken
-		} else if errors.Is(err, jwt.ErrTokenInvalidClaims) {
-			return nil, ErrInvalidToken
-		}
-		return nil, err
-	}
-
-	tokenData, ok := data.Claims.(*RefreshToken)
-	if !ok || !data.Valid {
-		return nil, ErrInvalidToken
-	}
-
-	return tokenData, nil
-}
-
-func ParseRefreshToken(token string, cm *config.ConfigManager) (*jwt.Token, error) {
-
-	if token == "" {
-		return nil, ErrFieldEmpty
-	}
-
-	data, err := jwt.ParseWithClaims(token,
-		&RefreshToken{},
-		func(t *jwt.Token) (any, error) {
-			return cm.Get().TokenConf.RefreshBt, nil
-		},
-		jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithIssuer(Issuer),
-		jwt.WithExpirationRequired())
-
-	if err != nil {
-		if errors.Is(err, jwt.ErrTokenExpired) {
-			return nil, ErrExpToken
-		} else if errors.Is(err, jwt.ErrTokenSignatureInvalid) {
-			return nil, ErrInvalidSignToken
-		} else if errors.Is(err, jwt.ErrTokenInvalidClaims) {
-			return nil, ErrInvalidToken
-		}
-		return nil, err
-	}
-
-	return data, nil
 }
 
 type ErrBody struct {
@@ -303,8 +70,8 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 			return
 		}
 
-		tokenData, errValid := am.ValidAccessToken(token)
-		if ErrExpToken.Is(errValid) {
+		tokenData, errValid := am.tu.ValidAccessToken(token)
+		if tokens.ErrExpToken.Is(errValid) {
 
 			errBody := ErrBody{
 				Err:     "Unauthorized",

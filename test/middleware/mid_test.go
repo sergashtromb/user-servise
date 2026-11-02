@@ -14,6 +14,7 @@ import (
 	"time"
 	"user_service/config"
 	"user_service/domain"
+	"user_service/infrastructure/tokens"
 	"user_service/initial/limiter"
 	"user_service/initial/middleware"
 	"user_service/pkg/repoerrors"
@@ -346,6 +347,8 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 	cm := config.NewConfigManager()
 	cm.Init(context.TODO(), "")
 
+	tu := tokens.NewTokenUtil(cm)
+
 	key1 := uuid.NewV7()
 	key2 := uuid.NewV7()
 	familyId2 := uuid.NewV7()
@@ -358,8 +361,6 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 		FamilyId uuid.UUID
 		DeviceId string
 		Agent    string
-		Access   middleware.AccessToken
-		Refresh  middleware.RefreshToken
 	}{
 		{
 			Name:     "trying with empty fields",
@@ -369,8 +370,6 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 			FamilyId: uuid.Nil(),
 			DeviceId: "",
 			Agent:    "",
-			Access:   middleware.AccessToken{},
-			Refresh:  middleware.RefreshToken{},
 		},
 		{
 			Name:     "normal variant",
@@ -380,39 +379,13 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 			FamilyId: familyId2,
 			DeviceId: "123456",
 			Agent:    "chrome",
-			Access: middleware.AccessToken{
-				UserId:    key2,
-				FamilyId:  familyId2,
-				DeviceId:  "123456",
-				Agent:     "chrome",
-				TokenType: middleware.AccessTokenType,
-				RegisteredClaims: jwt.RegisteredClaims{
-					ID:        uuid.New().String(),
-					Issuer:    "user-service",
-					Subject:   key2.String(),
-					ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
-					IssuedAt:  jwt.NewNumericDate(time.Now()),
-				},
-			},
-			Refresh: middleware.RefreshToken{
-				UserId:    key2,
-				FamilyId:  familyId2,
-				TokenType: middleware.RefreshTokenType,
-				RegisteredClaims: jwt.RegisteredClaims{
-					ID:        uuid.New().String(),
-					Issuer:    "user-service",
-					Subject:   key2.String(),
-					ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * 7 * time.Hour)),
-					IssuedAt:  jwt.NewNumericDate(time.Now()),
-				},
-			},
 		},
 	}
 
 	for _, val := range table {
 
 		t.Run(val.Name, func(t *testing.T) {
-			access, refresh, err := middleware.GeneratePairToken(val.UserId, val.FamilyId, val.DeviceId, val.Agent, cm)
+			access, refresh, err := tu.GeneratePairToken(val.UserId, val.FamilyId, val.DeviceId, val.Agent)
 			if val.IsError {
 				if err == nil {
 					t.Errorf("fail generate pair token should return error")
@@ -425,45 +398,45 @@ func TestGeneratePairTokenAuthMiddleWare(t *testing.T) {
 			}
 
 			token, err := jwt.ParseWithClaims(access,
-				&middleware.AccessToken{},
+				&tokens.AccessToken{},
 				func(t *jwt.Token) (any, error) {
 					return cm.Get().TokenConf.AccessBt, nil
 				},
 				jwt.WithValidMethods([]string{"HS256"}),
-				jwt.WithIssuer(middleware.Issuer))
+				jwt.WithIssuer(tokens.Issuer))
 
 			if err != nil {
 				t.Errorf("fail parse token error:%v", err)
 			}
 
-			claim, ok := token.Claims.(*middleware.AccessToken)
+			claim, ok := token.Claims.(*tokens.AccessToken)
 			if !ok || !token.Valid {
 				t.Errorf("fail generate token access dont valid")
 			}
 
-			if claim.TokenType != val.Access.TokenType || claim.FamilyId != val.Access.FamilyId || claim.DeviceId != val.Access.DeviceId ||
-				claim.Agent != val.Access.Agent || claim.UserId != val.Access.UserId {
+			if claim.TokenType != tokens.AccessTokenType || claim.FamilyId != val.FamilyId || claim.DeviceId != val.DeviceId ||
+				claim.Agent != val.Agent || claim.UserId != val.UserId {
 				t.Errorf("fail generate token access field dont equal")
 			}
 
 			tokenRef, err := jwt.ParseWithClaims(refresh,
-				&middleware.RefreshToken{},
+				&tokens.RefreshToken{},
 				func(t *jwt.Token) (any, error) {
 					return cm.Get().TokenConf.RefreshBt, nil
 				},
 				jwt.WithValidMethods([]string{"HS256"}),
-				jwt.WithIssuer(middleware.Issuer))
+				jwt.WithIssuer(tokens.Issuer))
 
 			if err != nil {
 				t.Errorf("fail parse token error:%v", err)
 			}
 
-			claimRef, ok := tokenRef.Claims.(*middleware.RefreshToken)
+			claimRef, ok := tokenRef.Claims.(*tokens.RefreshToken)
 			if !ok || !tokenRef.Valid {
 				t.Errorf("fail generate token refresh dont valid")
 			}
 
-			if claimRef.TokenType != val.Refresh.TokenType || claimRef.FamilyId != val.Refresh.FamilyId || claimRef.UserId != val.Refresh.UserId {
+			if claimRef.TokenType != tokens.RefreshTokenType || claimRef.FamilyId != val.FamilyId || claimRef.UserId != val.UserId {
 				t.Errorf("fail generate token refresh field dont equal")
 			}
 
@@ -477,13 +450,15 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 
 	util.LoadEnvFile()
 
-	auditMock := domain.GetMockEmptyAuditService()
-	sessionMock := new(domain.SessionStoreMock)
-	userStoreMock := new(domain.UserStoreMock)
+	//auditMock := domain.GetMockEmptyAuditService()
+	//sessionMock := new(domain.SessionStoreMock)
+	//userStoreMock := new(domain.UserStoreMock)
 	cm := config.NewConfigManager()
 	cm.Init(context.TODO(), "")
 
-	AuthMiddl := middleware.NewAuthMiddleware(auditMock, sessionMock, userStoreMock, cm)
+	tu := tokens.NewTokenUtil(cm)
+
+	//AuthMiddl := middleware.NewAuthMiddleware(auditMock, sessionMock, userStoreMock, cm, tu)
 
 	invalidKey, err := GenerateSecret(32)
 	if err != nil {
@@ -533,7 +508,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(-5 * time.Minute),
 			SignatureAlg: "HS256",
 			Key:          cm.Get().TokenConf.AccessBt,
-			Err:          middleware.ErrExpToken,
+			Err:          tokens.ErrExpToken,
 		},
 		{
 			Name:         "no_correct_token",
@@ -548,7 +523,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(15 * time.Minute),
 			SignatureAlg: "HS256",
 			Key:          cm.Get().TokenConf.AccessBt,
-			Err:          middleware.ErrInvalidToken,
+			Err:          tokens.ErrInvalidToken,
 		},
 		{
 			Name:         "token_issue_at_future_date",
@@ -563,7 +538,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(30 * time.Minute),
 			SignatureAlg: "HS256",
 			Key:          cm.Get().TokenConf.AccessBt,
-			Err:          middleware.ErrFutureDateToken,
+			Err:          tokens.ErrFutureDateToken,
 		},
 		{
 			Name:         "invalid_token_signature",
@@ -578,7 +553,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(15 * time.Minute),
 			SignatureAlg: "HS256",
 			Key:          invalidKey,
-			Err:          middleware.ErrInvalidSignToken,
+			Err:          tokens.ErrInvalidSignToken,
 		},
 		{
 			Name:         "empty_token",
@@ -593,7 +568,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(15 * time.Minute),
 			SignatureAlg: "",
 			Key:          invalidKey,
-			Err:          middleware.ErrFieldEmpty,
+			Err:          tokens.ErrFieldEmpty,
 		},
 	}
 
@@ -603,7 +578,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 
 			var accessToken string
 			if !val.CustomGen {
-				accessStr := middleware.NewAccessToken(val.UserId, val.FamilyId, val.DeviceId, val.Agent,
+				accessStr := tokens.NewAccessToken(val.UserId, val.FamilyId, val.DeviceId, val.Agent, "jwt-1",
 					cm.Get().TokenConf.AccessLifeTime)
 				accessStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
 				accessStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssueAt)
@@ -644,7 +619,7 @@ func TestValidAccessTokenAuthMiddleWare(t *testing.T) {
 				accessToken = ""
 			}
 
-			_, err = AuthMiddl.ValidAccessToken(accessToken)
+			_, err = tu.ValidAccessToken(accessToken)
 			if val.IsError {
 				if !val.Err.Is(err) {
 					t.Errorf("fail error dont equal should err:%v returned err:%v", val.Err, err)
@@ -664,13 +639,10 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 
 	util.LoadEnvFile()
 
-	auditMock := domain.GetMockEmptyAuditService()
-	sessionMock := new(domain.SessionStoreMock)
-	userStoreMock := new(domain.UserStoreMock)
 	cm := config.NewConfigManager()
 	cm.Init(context.TODO(), "")
 
-	AuthMiddl := middleware.NewAuthMiddleware(auditMock, sessionMock, userStoreMock, cm)
+	tu := tokens.NewTokenUtil(cm)
 
 	invalidKey, err := GenerateSecret(32)
 	if err != nil {
@@ -720,7 +692,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(-5 * time.Minute),
 			SignatureAlg: "HS256",
 			Key:          cm.Get().TokenConf.RefreshBt,
-			Err:          middleware.ErrExpToken,
+			Err:          tokens.ErrExpToken,
 		},
 		{
 			Name:         "no_correct_token",
@@ -735,7 +707,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(15 * time.Minute),
 			SignatureAlg: "HS256",
 			Key:          cm.Get().TokenConf.RefreshBt,
-			Err:          middleware.ErrInvalidToken,
+			Err:          tokens.ErrInvalidToken,
 		},
 		{
 			Name:         "token_issue_at_future_date",
@@ -750,7 +722,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(30 * time.Minute),
 			SignatureAlg: "HS256",
 			Key:          cm.Get().TokenConf.RefreshBt,
-			Err:          middleware.ErrFutureDateToken,
+			Err:          tokens.ErrFutureDateToken,
 		},
 		{
 			Name:         "invalid_token_signature",
@@ -765,7 +737,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(15 * time.Minute),
 			SignatureAlg: "HS256",
 			Key:          invalidKey,
-			Err:          middleware.ErrInvalidSignToken,
+			Err:          tokens.ErrInvalidSignToken,
 		},
 		{
 			Name:         "empty_token",
@@ -780,7 +752,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 			Exp:          time.Now().Add(15 * time.Minute),
 			SignatureAlg: "",
 			Key:          invalidKey,
-			Err:          middleware.ErrFieldEmpty,
+			Err:          tokens.ErrFieldEmpty,
 		},
 	}
 
@@ -790,7 +762,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 
 			var refreshToken string
 			if !val.CustomGen {
-				refreshStr := middleware.NewRefreshToken(val.UserId, val.FamilyId, cm.Get().TokenConf.RefreshLifeTime)
+				refreshStr := tokens.NewRefreshToken(val.UserId, val.FamilyId, "jwt-1", cm.Get().TokenConf.RefreshLifeTime)
 				refreshStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
 				refreshStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssueAt)
 
@@ -830,7 +802,7 @@ func TestValidRefreshTokenAuthMiddleWare(t *testing.T) {
 				refreshToken = ""
 			}
 
-			err = AuthMiddl.ValidRefreshToken(refreshToken)
+			_, err = tu.ValidRefreshToken(refreshToken)
 			if val.IsError {
 				if !val.Err.Is(err) {
 					t.Errorf("fail error dont equal should err:%v returned err:%v", val.Err, err)
@@ -862,8 +834,10 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 	cm := config.NewConfigManager()
 	cm.Init(context.TODO(), "")
 
+	tu := tokens.NewTokenUtil(cm)
+
 	authMiddl := middleware.NewAuthMiddleware(auditMock, sessionStoreMock,
-		new(domain.UserStoreMock), cm)
+		new(domain.UserStoreMock), cm, tu)
 
 	handlerF := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
@@ -916,7 +890,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
-			Iss:            middleware.Issuer,
+			Iss:            tokens.Issuer,
 			IpReq:          "1.1.1.1:1234",
 			MethodMustCall: []string{"GetSessionByFamilyId"},
 			MethodNoCall:   []string{},
@@ -947,7 +921,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
-			Iss:            middleware.Issuer,
+			Iss:            tokens.Issuer,
 			MethodMustCall: []string{},
 			MethodNoCall:   []string{"GetSessionByFamilyId"},
 			Sessions:       nil,
@@ -987,7 +961,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Agent:          "chrome",
 			Exp:            time.Now().Add(-5 * time.Minute),
 			IssAt:          time.Now().Add(-20 * time.Minute),
-			Iss:            middleware.Issuer,
+			Iss:            tokens.Issuer,
 			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
@@ -1031,7 +1005,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Agent:          "",
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
-			Iss:            middleware.Issuer,
+			Iss:            tokens.Issuer,
 			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
@@ -1074,7 +1048,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
-			Iss:            middleware.Issuer,
+			Iss:            tokens.Issuer,
 			IpReq:          "3.3.3.3:1234",
 			AgentReq:       "Safari",
 			DeviceIdReq:    "54321",
@@ -1120,7 +1094,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
-			Iss:            middleware.Issuer,
+			Iss:            tokens.Issuer,
 			IpReq:          "3.3.3.3:1234",
 			AgentReq:       "Safari",
 			DeviceIdReq:    "54321",
@@ -1166,7 +1140,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			Agent:          "chrome",
 			Exp:            time.Now().Add(15 * time.Minute),
 			IssAt:          time.Now(),
-			Iss:            middleware.Issuer,
+			Iss:            tokens.Issuer,
 			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
@@ -1211,7 +1185,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			var tokenstr string
 
 			if val.UserId != uuid.Nil() {
-				accessStr := middleware.NewAccessToken(val.UserId, val.FamilyId, val.DeviceId, val.Agent,
+				accessStr := tokens.NewAccessToken(val.UserId, val.FamilyId, val.DeviceId, val.Agent, "jwt-1",
 					cm.Get().TokenConf.AccessLifeTime)
 				accessStr.RegisteredClaims.ExpiresAt = jwt.NewNumericDate(val.Exp)
 				accessStr.RegisteredClaims.IssuedAt = jwt.NewNumericDate(val.IssAt)
