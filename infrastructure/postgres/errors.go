@@ -2,61 +2,36 @@ package postgres
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"user_service/pkg/repoerrors"
 )
 
-// FIXME change on pkg errors
-const (
-	ErrUserAlreadyExists       = "User already exists"
-	CodeDbErrUserAlreadyExists = "001"
+const RepoName = "Postgres"
 
-	ErrFieldCantBeEmpty       = "Field can't be empty"
-	CodeDbErrFieldCantBeEmpty = "002"
-
-	ErrConvertQuery       = "Failed convert sql from object"
-	CodeDbErrConvertQuery = "003"
-
-	ErrUserDontExist       = "User don't exist"
-	CodeDbErrUserDontExist = "004"
+var (
+	ErrUserAlreadyExists = repoerrors.NewError(RepoName, "User already exists", "001")
+	ErrFieldCantBeEmpty  = repoerrors.NewError(RepoName, "Field can't be empty", "002")
+	ErrConvertQuery      = repoerrors.NewError(RepoName, "Failed convert sql from object", "003")
+	ErrUserDontExist     = repoerrors.NewError(RepoName, "User don't exist", "004")
 
 	CodeErrUniqueViolation = "23505"
 )
 
-type DbError struct {
-	Mess   string
-	Fields []string
-	Code   string
-}
-
-func NewDbError(ms string, code string, fields []string) *DbError {
-	return &DbError{
-		Mess:   ms,
-		Code:   code,
-		Fields: fields,
-	}
-}
-
-func (de *DbError) Error() string {
-	return fmt.Sprintf("DbError: CODE: %s, w: %s, f: %v\n", de.Code, de.Mess, de.Fields)
-}
-
 func DbErrorFromUnicViolation(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == CodeErrUniqueViolation {
-
-		newDbErr := NewDbError(ErrUserAlreadyExists, CodeDbErrUserAlreadyExists, make([]string, 0))
+		newErr := ErrUserAlreadyExists.Clone()
 
 		switch pgErr.ConstraintName {
 		case "users_username_idx":
-			newDbErr.Fields = append(newDbErr.Fields, "username")
+			newErr.Fields = append(newErr.Fields, "username")
 		case "users_email_idx":
-			newDbErr.Fields = append(newDbErr.Fields, "email")
+			newErr.Fields = append(newErr.Fields, "email")
 		case "users_phone_idx":
-			newDbErr.Fields = append(newDbErr.Fields, "phone")
+			newErr.Fields = append(newErr.Fields, "phone")
 		}
-		return newDbErr
+		return newErr
 	}
 
 	return nil

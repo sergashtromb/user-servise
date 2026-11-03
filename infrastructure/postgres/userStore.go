@@ -72,7 +72,9 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.U
 
 	if userOpt.UserName.Define {
 		if !userOpt.UserName.Valid {
-			return NewDbError(ErrFieldCantBeEmpty, CodeDbErrFieldCantBeEmpty, []string{"username"})
+			err := ErrFieldCantBeEmpty.Clone()
+			err.Fields = append(err.Fields, "username")
+			return err
 		}
 
 		qr = qr.Set("username", userOpt.UserName.Value)
@@ -96,7 +98,9 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.U
 
 	if userOpt.IsDeleted.Define {
 		if !userOpt.IsDeleted.Valid {
-			return NewDbError(ErrFieldCantBeEmpty, CodeDbErrFieldCantBeEmpty, []string{"is_deleted"})
+			err := ErrFieldCantBeEmpty.Clone()
+			err.Fields = append(err.Fields, "is_deleted")
+			return err
 		}
 
 		qr = qr.Set("is_deleted", userOpt.IsDeleted.Value)
@@ -104,7 +108,7 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.U
 
 	query, args, err := qr.ToSql()
 	if err != nil {
-		return NewDbError(ErrConvertQuery, CodeDbErrConvertQuery, make([]string, 0))
+		return ErrConvertQuery.Clone()
 	}
 
 	pool := us.db.GetPool()
@@ -134,7 +138,7 @@ func (us *UserStore) Delete(ctx context.Context, id uuid.UUID) error {
 		RETURNING true;`, id).Scan(&exist)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		return NewDbError(ErrUserDontExist, CodeDbErrUserDontExist, make([]string, 0))
+		return ErrUserDontExist.Clone()
 	}
 
 	if err != nil {
@@ -161,7 +165,7 @@ func (us *UserStore) GetByEmail(ctx context.Context, email string) (*domain.User
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, NewDbError(ErrUserDontExist, CodeDbErrUserDontExist, make([]string, 0))
+			return nil, ErrUserDontExist.Clone()
 		} else {
 			return nil, err
 		}
@@ -186,7 +190,7 @@ func (us *UserStore) GetByPhone(ctx context.Context, phone string) (*domain.User
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, NewDbError(ErrUserDontExist, CodeDbErrUserDontExist, make([]string, 0))
+			return nil, ErrUserDontExist.Clone()
 		} else {
 			return nil, err
 		}

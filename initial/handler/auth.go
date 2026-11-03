@@ -392,6 +392,10 @@ func (ah *AuthHandler) UpdateRefreshToken(w http.ResponseWriter, r *http.Request
 	w.Write(jsonData)
 }
 
+func (ah *AuthHandler) RegistrationUser(w http.ResponseWriter, r *http.Request) {
+
+}
+
 func sendErr(w http.ResponseWriter, errBody middleware.ErrBody, traceId, wwwErr string, ctx context.Context, code int,
 	audit domain.AuditService) {
 

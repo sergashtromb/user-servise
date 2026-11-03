@@ -11,6 +11,7 @@ import (
 	"time"
 	"user_service/config"
 	"user_service/domain"
+	"user_service/infrastructure/postgres"
 	"user_service/infrastructure/reporedis/custerr"
 	"user_service/infrastructure/tokens"
 	"user_service/initial/handler"
@@ -644,6 +645,171 @@ func TestUpdateRefreshToken(t *testing.T) {
 
 		})
 
+	}
+
+}
+
+// SPEC RegistrationUser
+// Что это и что делает? - это handler который принимает запросы на регистрацию нового пользователя в системе
+// если все корректно то попытается зарегать пользователя либо вернет ошибку уникальности что пользователь уже существует
+//
+//	Tests:
+//			correct_request - корректный тест зарегестрирует пользователя в базе данных, создат сейссию в кеш
+//				так же положит пользователя в кеш userStore
+//			dublicate - ошибочный тест когда username уже существует, вернуть ошибку
+//			empty_field - ошибочный тест с пустыми полями, вернуть ошибку
+func TestRegistrationUser(t *testing.T) {
+
+	userStoreCache := domain.NewUserStoreMock(t)
+	userStoreBD := domain.NewUserStoreMock(t)
+	sessionStore := domain.NewSessionStoreMock(t)
+
+	ip1 := "1.1.1.1:5432"
+	agent1 := "chrome widows 10"
+	deviceId := "12345"
+
+	username1 := "username"
+	pass1 := "54321"
+
+	_ = map[string]struct {
+		Comm          string
+		IpReq         string
+		AgentReq      string
+		DeviceIdReq   string
+		UserName      string
+		Email         string
+		Phone         string
+		Password      string
+		fnSetUpMock   func()
+		fnReadyAnswer func() *ResponseResult
+	}{
+		"correct_request": {
+			Comm: `корректный тест зарегестрирует пользователя в базе данных, создат сейссию в кеш
+					так же положит пользователя в кеш userStore`,
+			IpReq:       ip1,
+			AgentReq:    agent1,
+			DeviceIdReq: deviceId,
+			UserName:    username1,
+			Password:    pass1,
+			Email:       "",
+			Phone:       "",
+			fnSetUpMock: func() {
+				resetMock(&userStoreCache.Mock, t)
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				userStoreBD.On("Create", context.Background(), mock.Anything).
+					Return(nil).
+					Once()
+
+				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
+					Return(nil).
+					Once()
+
+			},
+			fnReadyAnswer: func() *ResponseResult {
+
+				bodyJson := `
+				{
+					"access_token": "access_token",
+					"token_type": "Bearer",
+					"expires_in": 900,
+					"refresh_token": "refresh_token"
+				}
+				`
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.Header().Set("Cache-Control", "no-store")
+				resp.Header().Set("Pragma", "no-cache")
+				resp.WriteHeader(http.StatusOK)
+				resp.Write([]byte(bodyJson))
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+		},
+		"dublicate": {
+			Comm:        `ошибочный тест когда username уже существует, вернуть ошибку`,
+			IpReq:       ip1,
+			AgentReq:    agent1,
+			DeviceIdReq: deviceId,
+			UserName:    username1,
+			Password:    pass1,
+			Email:       "",
+			Phone:       "",
+			fnSetUpMock: func() {
+				resetMock(&userStoreCache.Mock, t)
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				userStoreBD.On("Create", context.Background(), mock.Anything).
+					Return(nil).
+					Once()
+
+				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
+					Return(postgres.ErrUserAlreadyExists).
+					Once()
+
+			},
+			fnReadyAnswer: func() *ResponseResult {
+
+				bodyJson := `
+				{
+					"error": "conflict",
+					"code": "REGISTRATION_FAILED",
+					"message": "Registration failed. Please check your details or try logging in."
+				}
+				`
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusConflict)
+				resp.Write([]byte(bodyJson))
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+		},
+		"empty_field": {
+			Comm:        `ошибочный тест когда username уже существует, вернуть ошибку`,
+			IpReq:       ip1,
+			AgentReq:    agent1,
+			DeviceIdReq: deviceId,
+			UserName:    "",
+			Password:    "",
+			Email:       "",
+			Phone:       "",
+			fnSetUpMock: func() {
+				resetMock(&userStoreCache.Mock, t)
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+
+				bodyJson := `
+				{
+					"error": "conflict",
+					"code": "REGISTRATION_FAILED",
+					"message": "Registration failed. Please check your details or try logging in."
+				}
+				`
+				resp := httptest.NewRecorder()
+				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+				resp.WriteHeader(http.StatusConflict)
+				resp.Write([]byte(bodyJson))
+
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
+				}
+			},
+		},
 	}
 
 }
