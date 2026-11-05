@@ -5,12 +5,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"time"
 	"user_service/config"
 	"user_service/domain"
+	"user_service/infrastructure/postgres"
 	"user_service/infrastructure/reporedis/custerr"
 	"user_service/infrastructure/tokens"
 	"user_service/initial/middleware"
+	"uuid"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -38,14 +45,18 @@ type AuthHandler struct {
 	audit domain.AuditService
 	ss    domain.SessionStore
 	tu    *tokens.TokenUtil
+	sgr   singleflight.Group
+	usBd  domain.UserStore
 }
 
-func NewAuthHandler(cm *config.ConfigManager, audit domain.AuditService, ss domain.SessionStore, tu *tokens.TokenUtil) *AuthHandler {
+func NewAuthHandler(cm *config.ConfigManager, audit domain.AuditService, ss domain.SessionStore, tu *tokens.TokenUtil,
+	usBd domain.UserStore) *AuthHandler {
 	return &AuthHandler{
 		cm:    cm,
 		audit: audit,
 		ss:    ss,
 		tu:    tu,
+		usBd:  usBd,
 	}
 }
 
@@ -394,6 +405,152 @@ func (ah *AuthHandler) UpdateRefreshToken(w http.ResponseWriter, r *http.Request
 
 func (ah *AuthHandler) RegistrationUser(w http.ResponseWriter, r *http.Request) {
 
+	ctx := r.Context()
+	traceId, ok := ctx.Value(domain.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
+
+	IP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	DeviceId := r.Header.Get(HeadDeviceId)
+	Agent := r.Header.Get(HeadUserAgent)
+
+	if IP == "" || DeviceId == "" || Agent == "" {
+		err := "The request is missing important fields."
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &err, "", traceId)
+		ah.audit.Log(ctx, event)
+
+		sendBadrequest(w, traceId, err, ctx, ah.audit)
+		return
+	}
+
+	jsonData, err := io.ReadAll(r.Body)
+	if err != nil {
+
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
+		ah.audit.Log(ctx, event)
+
+		sendIternalServerError(w, traceId, ctx, ah.audit)
+		return
+	}
+
+	var user domain.User
+	err = json.Unmarshal(jsonData, &user)
+	if err != nil {
+
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
+		ah.audit.Log(ctx, event)
+
+		sendIternalServerError(w, traceId, ctx, ah.audit)
+		return
+	}
+
+	if user.UserName == "" || user.Password == "" {
+		err := "The request is missing important fields."
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &err, "", traceId)
+		ah.audit.Log(ctx, event)
+
+		errBody := middleware.ErrBody{
+			Err:     "conflict",
+			Code:    "REGISTRATION_FAILED",
+			Message: "Registration failed. Please check your details or try logging in.",
+		}
+		sendErr(w, errBody, traceId, "", ctx, http.StatusConflict, ah.audit)
+		return
+	}
+	key := fmt.Sprintf("%s%s%s%s%s", IP, DeviceId, Agent, user.UserName, user.Password)
+
+	idDt, err, _ := ah.sgr.Do(key, func() (any, error) {
+		id, err := ah.usBd.Create(ctx, &user)
+		return id, err
+	})
+
+	id, ok := idDt.(uuid.UUID)
+	if !ok {
+		strerr := "fail convert any in uuid"
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
+		ah.audit.Log(ctx, event)
+		sendIternalServerError(w, traceId, ctx, ah.audit)
+		return
+	}
+
+	if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
+		ah.audit.Log(ctx, event)
+	}
+
+	if postgres.ErrUserAlreadyExists.Is(err) {
+
+		errBody := middleware.ErrBody{
+			Err:     "conflict",
+			Code:    "REGISTRATION_FAILED",
+			Message: "Registration failed. Please check your details or try logging in.",
+		}
+		sendErr(w, errBody, traceId, "", ctx, http.StatusConflict, ah.audit)
+		return
+
+	} else if err != nil {
+		sendIternalServerError(w, traceId, ctx, ah.audit)
+		return
+	}
+
+	familyId := uuid.NewV7()
+	session := domain.Session{
+		UserId:     id,
+		DeviceId:   DeviceId,
+		Agent:      Agent,
+		Ip:         IP,
+		Version:    "jwt-1",
+		CreatedAt:  time.Now(),
+		LastUpdate: time.Now(),
+	}
+
+	err = ah.ss.Registration(ctx, &session, familyId)
+	if err != nil {
+
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
+		ah.audit.Log(ctx, event)
+
+		sendIternalServerError(w, traceId, ctx, ah.audit)
+		return
+	}
+
+	access, refresh, err := ah.tu.GeneratePairToken(id, familyId, DeviceId, Agent)
+	if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
+		ah.audit.Log(ctx, event)
+
+		sendIternalServerError(w, traceId, ctx, ah.audit)
+		return
+	}
+
+	validData := ValidData{
+		AccessToken:  access,
+		TokenType:    "Bearer",
+		ExpiresIn:    ah.cm.Get().TokenConf.AccessLifeTime * 60,
+		RefreshToken: refresh,
+	}
+
+	jsonBytes, err := json.Marshal(validData)
+	if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
+		ah.audit.Log(ctx, event)
+
+		sendIternalServerError(w, traceId, ctx, ah.audit)
+		return
+	}
+
+	w.Header().Add(HeadContentType, ValHeadAppJson)
+	w.Header().Add(HeadCacheControle, "no-store")
+	w.Header().Add(HeadPragma, "no-cache")
+	w.WriteHeader(http.StatusCreated)
+	w.Write(jsonBytes)
 }
 
 func sendErr(w http.ResponseWriter, errBody middleware.ErrBody, traceId, wwwErr string, ctx context.Context, code int,

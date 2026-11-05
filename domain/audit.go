@@ -30,8 +30,10 @@ const (
 	EventUpdateSessionIPSuccess EventType = "update_session_ip_success"
 	EventUpdateSessionIPFailed  EventType = "update_session_ip_failed"
 
-	EventLoginSucces EventType = "login_succes"
-	EventLoginFailed EventType = "login_failed"
+	EventLoginSucces        EventType = "login_succes"
+	EventLoginFailed        EventType = "login_failed"
+	EventRegistrationSucces EventType = "registration_succes"
+	EventRegistrationFailed EventType = "registration_failed"
 
 	EventInboxRequestStart EventType = "inbox_request_start"
 	EventInboxRequestEnd   EventType = "inbox_request_end"

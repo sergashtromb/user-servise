@@ -45,24 +45,26 @@ func (us *UserStore) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, e
 }
 
 // TODO add custom error when fields empty
-func (us *UserStore) Create(ctx context.Context, user *domain.User) error {
+func (us *UserStore) Create(ctx context.Context, user *domain.User) (uuid.UUID, error) {
 
 	pool := us.db.GetPool()
 
-	_, err := pool.Exec(ctx,
+	var id uuid.UUID
+	err := pool.QueryRow(ctx,
 		`INSERT INTO users (username, pass, email, phone)
-		VALUES ($1, $2, $3, $4);`, &user.UserName, &user.Password, &user.Email, &user.Phone)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id;`, &user.UserName, &user.Password, &user.Email, &user.Phone).Scan(&id)
 
 	if err != nil {
 		errUnicViolation := DbErrorFromUnicViolation(err)
 		if errUnicViolation != nil {
-			return errUnicViolation
+			return uuid.Nil(), errUnicViolation
 		} else {
-			return err
+			return uuid.Nil(), err
 		}
 	}
 
-	return nil
+	return id, nil
 }
 
 func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.UserOpt) error {

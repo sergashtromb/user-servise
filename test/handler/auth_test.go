@@ -88,8 +88,8 @@ func TestUpdateRefreshToken(t *testing.T) {
 	}
 	expiredRefresh := jwt.NewWithClaims(jwt.SigningMethodHS256, expiredRefreshClaims)
 	expiredRefreshToken, _ := expiredRefresh.SignedString(cm.Get().TokenConf.RefreshBt)
-
-	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu)
+	userStoreBD := domain.NewUserStoreMock(t)
+	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD)
 
 	session1 := domain.Session{
 		UserId:     userId1,
@@ -660,9 +660,13 @@ func TestUpdateRefreshToken(t *testing.T) {
 //			empty_field - ошибочный тест с пустыми полями, вернуть ошибку
 func TestRegistrationUser(t *testing.T) {
 
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
 	userStoreCache := domain.NewUserStoreMock(t)
 	userStoreBD := domain.NewUserStoreMock(t)
 	sessionStore := domain.NewSessionStoreMock(t)
+	tu := tokens.NewTokenUtil(cm)
 
 	ip1 := "1.1.1.1:5432"
 	agent1 := "chrome widows 10"
@@ -671,8 +675,11 @@ func TestRegistrationUser(t *testing.T) {
 	username1 := "username"
 	pass1 := "54321"
 
-	_ = map[string]struct {
+	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD)
+
+	table := map[string]struct {
 		Comm          string
+		IsError       bool
 		IpReq         string
 		AgentReq      string
 		DeviceIdReq   string
@@ -686,6 +693,7 @@ func TestRegistrationUser(t *testing.T) {
 		"correct_request": {
 			Comm: `корректный тест зарегестрирует пользователя в базе данных, создат сейссию в кеш
 					так же положит пользователя в кеш userStore`,
+			IsError:     false,
 			IpReq:       ip1,
 			AgentReq:    agent1,
 			DeviceIdReq: deviceId,
@@ -699,7 +707,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&sessionStore.Mock, t)
 
 				userStoreBD.On("Create", context.Background(), mock.Anything).
-					Return(nil).
+					Return(uuid.NewV7(), nil).
 					Once()
 
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -721,7 +729,7 @@ func TestRegistrationUser(t *testing.T) {
 				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
 				resp.Header().Set("Cache-Control", "no-store")
 				resp.Header().Set("Pragma", "no-cache")
-				resp.WriteHeader(http.StatusOK)
+				resp.WriteHeader(http.StatusCreated)
 				resp.Write([]byte(bodyJson))
 
 				return &ResponseResult{
@@ -733,6 +741,7 @@ func TestRegistrationUser(t *testing.T) {
 		},
 		"dublicate": {
 			Comm:        `ошибочный тест когда username уже существует, вернуть ошибку`,
+			IsError:     true,
 			IpReq:       ip1,
 			AgentReq:    agent1,
 			DeviceIdReq: deviceId,
@@ -746,11 +755,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&sessionStore.Mock, t)
 
 				userStoreBD.On("Create", context.Background(), mock.Anything).
-					Return(nil).
-					Once()
-
-				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
-					Return(postgres.ErrUserAlreadyExists).
+					Return(uuid.Nil(), postgres.ErrUserAlreadyExists).
 					Once()
 
 			},
@@ -777,6 +782,7 @@ func TestRegistrationUser(t *testing.T) {
 		},
 		"empty_field": {
 			Comm:        `ошибочный тест когда username уже существует, вернуть ошибку`,
+			IsError:     true,
 			IpReq:       ip1,
 			AgentReq:    agent1,
 			DeviceIdReq: deviceId,
@@ -810,6 +816,87 @@ func TestRegistrationUser(t *testing.T) {
 				}
 			},
 		},
+	}
+
+	for name, val := range table {
+
+		t.Run(name, func(t *testing.T) {
+
+			val.fnSetUpMock()
+
+			body := fmt.Sprintf(`
+			{
+				"username": "%s",
+				"password": "%s"
+			}`, val.UserName, val.Password)
+
+			req := httptest.NewRequest(http.MethodPost, "/reg", bytes.NewBufferString(body))
+			req.Header.Add("Content-Type", "application/json")
+			req.Header.Add("Accept", "application/json")
+			req.Header.Add("Device-Id", val.DeviceIdReq)
+			req.Header.Add("User-Agent", val.AgentReq)
+			req.RemoteAddr = val.IpReq
+
+			rec := httptest.NewRecorder()
+
+			authHandler.RegistrationUser(rec, req)
+
+			mustResp := val.fnReadyAnswer()
+
+			if mustResp.Code != rec.Code {
+				t.Errorf("fail http status code dont equal want %v have %v", mustResp.Code, rec.Code)
+			}
+
+			if len(mustResp.Body) > 0 {
+
+				if val.IsError {
+
+					var mustErrBody middleware.ErrBody
+					err := json.Unmarshal(mustResp.Body, &mustErrBody)
+					if err != nil {
+						t.Fatalf("unmarshal json must %v", err)
+					}
+
+					var outErrBody middleware.ErrBody
+					err = json.Unmarshal(rec.Body.Bytes(), &outErrBody)
+					if err != nil {
+						t.Fatalf("unmarshal json out %v", err)
+					}
+
+					if mustErrBody.Err != outErrBody.Err || mustErrBody.Code != outErrBody.Code ||
+						mustErrBody.Message != outErrBody.Message {
+						t.Errorf("fail http body dont equal want %+v have %+v", mustErrBody, outErrBody)
+					}
+				} else {
+					var data map[string]any
+					err := json.Unmarshal(mustResp.Body, &data)
+					if err != nil {
+						t.Fatalf("unmarshal json must %v", err)
+					}
+
+					var outdata map[string]any
+					err = json.Unmarshal(rec.Body.Bytes(), &outdata)
+					if err != nil {
+						t.Fatalf("unmarshal json out %v", err)
+					}
+
+					if data["token_type"] != outdata["token_type"] || data["expires_in"] != outdata["expires_in"] {
+						t.Errorf("fail http body dont equal")
+					}
+
+					_, ok := outdata["access_token"]
+					if !ok {
+						t.Errorf("fail answer dont have access_token")
+					}
+
+					_, ok = outdata["refresh_token"]
+					if !ok {
+						t.Errorf("fail answer dont have refresh_token")
+					}
+				}
+			}
+		})
+
 	}
 
 }

@@ -40,9 +40,9 @@ func (m *UserStoreMock) Update(ctx context.Context, id uuid.UUID, userOpt *UserO
 	return args.Error(0)
 }
 
-func (m *UserStoreMock) Create(ctx context.Context, user *User) error {
+func (m *UserStoreMock) Create(ctx context.Context, user *User) (uuid.UUID, error) {
 	args := m.Called(ctx, user)
-	return args.Error(0)
+	return args.Get(0).(uuid.UUID), args.Error(1)
 }
 
 func (m *UserStoreMock) Delete(ctx context.Context, id uuid.UUID) error {
