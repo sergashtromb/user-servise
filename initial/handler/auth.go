@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 	"user_service/config"
 	"user_service/domain"
@@ -17,6 +18,8 @@ import (
 	"user_service/initial/middleware"
 	"uuid"
 
+	"github.com/vfaronov/httpheader"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -29,8 +32,12 @@ const (
 	HeadDeviceId      = "Device-Id"
 	HeadCacheControle = "Cache-Control"
 	HeadPragma        = "Pragma"
+	HeadXForwardedFor = "X-Forwarded-For"
+	HeadXRealIP       = "X-Real-IP"
+	HeadForwarded     = "Forwarded"
 
-	ValHeadAppJson = "application/json"
+	ValHeadAppJson      = "application/json"
+	MaxRegistrationBody = 64 << 10 // 64 KiB
 )
 
 type ValidData struct {
@@ -41,22 +48,43 @@ type ValidData struct {
 }
 
 type AuthHandler struct {
-	cm    *config.ConfigManager
-	audit domain.AuditService
-	ss    domain.SessionStore
-	tu    *tokens.TokenUtil
-	sgr   singleflight.Group
-	usBd  domain.UserStore
+	cm       *config.ConfigManager
+	audit    domain.AuditService
+	ss       domain.SessionStore
+	tu       *tokens.TokenUtil
+	sgr      singleflight.Group
+	usBd     domain.UserStore
+	fakePass []byte
+}
+
+type executionContext struct {
+	ctx      context.Context
+	traceId  string
+	ip       string
+	deviceId string
+	agent    string
+	user     *domain.User
+	hexid    string
+	hashPass string
+	familyId uuid.UUID
 }
 
 func NewAuthHandler(cm *config.ConfigManager, audit domain.AuditService, ss domain.SessionStore, tu *tokens.TokenUtil,
 	usBd domain.UserStore) *AuthHandler {
+	// все условия соблюдены, единственная причина почему отвалился это не сработал rand с системными вызовами
+	//	тогда в целом вся система не сможет работать корректно и коректно выдавать хеши пароль, ставим панику
+	fakePass, err := bcrypt.GenerateFromPassword([]byte("fake_password"), 10)
+	if err != nil {
+		panic("failed generate fake password hash, system cannot work!!!")
+	}
+
 	return &AuthHandler{
-		cm:    cm,
-		audit: audit,
-		ss:    ss,
-		tu:    tu,
-		usBd:  usBd,
+		cm:       cm,
+		audit:    audit,
+		ss:       ss,
+		tu:       tu,
+		usBd:     usBd,
+		fakePass: fakePass,
 	}
 }
 
@@ -71,7 +99,7 @@ func (ah *AuthHandler) UpdateRefreshToken(w http.ResponseWriter, r *http.Request
 
 	DeviceIdFromReq := r.Header.Get(HeadDeviceId)
 	AgentFromReq := r.Header.Get(HeadUserAgent)
-	if DeviceIdFromReq == "" || AgentFromReq == "" {
+	if strings.TrimSpace(DeviceIdFromReq) == "" || strings.TrimSpace(AgentFromReq) == "" {
 		sendBadrequest(w, traceId, "impotent field is empty", ctx, ah.audit)
 		return
 	}
@@ -405,34 +433,263 @@ func (ah *AuthHandler) UpdateRefreshToken(w http.ResponseWriter, r *http.Request
 
 func (ah *AuthHandler) RegistrationUser(w http.ResponseWriter, r *http.Request) {
 
+	ec, toReturn := ah.validateCheck(w, r, domain.EventRegistrationFailed)
+	if toReturn {
+		return
+	}
+
+	if strings.TrimSpace(ec.user.UserName) == "" || strings.TrimSpace(ec.user.Password) == "" {
+		err := "The request is missing important fields."
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &err, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		errBody := middleware.ErrBody{
+			Err:     "invalid_request",
+			Code:    "VALIDATION_ERROR",
+			Message: "Username and password are required.",
+		}
+		sendErr(w, errBody, ec.traceId, "", ec.ctx, http.StatusBadRequest, ah.audit)
+		return
+	}
+
+	toReturn = ah.addPasswordHashInExContext(w, ec, domain.EventRegistrationFailed)
+	if toReturn {
+		return
+	}
+
+	ec.user.Password = ec.hashPass
+
+	key := fmt.Sprintf("%s%s%s", ec.user.UserName, ec.user.Email, ec.user.Phone)
+
+	idDt, err, _ := ah.sgr.Do(key, func() (any, error) {
+		id, err := ah.usBd.Create(ec.ctx, ec.user)
+		return id, err
+	})
+
+	if postgres.ErrUserAlreadyExists.Is(err) {
+		// add info event
+		errBody := middleware.ErrBody{
+			Err:     "conflict",
+			Code:    "REGISTRATION_FAILED",
+			Message: "Registration failed. Please check your details or try logging in.",
+		}
+		sendErr(w, errBody, ec.traceId, "", ec.ctx, http.StatusConflict, ah.audit)
+		return
+
+	} else if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return
+	}
+
+	id, ok := idDt.(uuid.UUID)
+	if !ok {
+		strerr := "fail convert any in uuid"
+		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return
+	}
+
+	hexId := hex.EncodeToString(id[:])
+	ec.hexid = hexId
+	ec.user.Id = id
+
+	toReturn = ah.regSession(w, ec, domain.EventRegistrationFailed)
+	if toReturn {
+		return
+	}
+
+	access, refresh, toReturn := ah.genTokens(w, ec, domain.EventRegistrationFailed)
+	if toReturn {
+		return
+	}
+
+	jsonBytes, toReturn := ah.makeBodyWithTokens(w, ec, access, refresh, domain.EventRegistrationFailed)
+	if toReturn {
+		return
+	}
+
+	event := domain.NewSuccessEvent(domain.EventRegistrationSucces, domain.EventPlaceHandler, hexId, ec.traceId)
+	ah.audit.Log(ec.ctx, event)
+
+	w.Header().Add(HeadContentType, ValHeadAppJson)
+	w.Header().Add(HeadCacheControle, "no-store")
+	w.Header().Add(HeadPragma, "no-cache")
+	w.WriteHeader(http.StatusCreated)
+	w.Write(jsonBytes)
+}
+
+func (ah *AuthHandler) SingIn(w http.ResponseWriter, r *http.Request) {
+
+	ec, toReturn := ah.validateCheck(w, r, domain.EventLoginFailed)
+	if toReturn {
+		return
+	}
+
+	if !(strings.TrimSpace(ec.user.UserName) != "" || strings.TrimSpace(ec.user.Email) != "" || strings.TrimSpace(ec.user.Phone) != "") ||
+		strings.TrimSpace(ec.user.Password) == "" {
+		err := "The request is missing important fields."
+		event := domain.NewFailedEvent(domain.EventLoginFailed, domain.EventPlaceHandler, &err, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		errBody := middleware.ErrBody{
+			Err:     "invalid_request",
+			Code:    "VALIDATION_ERROR",
+			Message: "Username and password are required.",
+		}
+		sendErr(w, errBody, ec.traceId, "", ec.ctx, http.StatusBadRequest, ah.audit)
+		return
+	}
+
+	userOpt := domain.ToUserOpt(ec.user)
+
+	key := fmt.Sprintf("%s%s%s", ec.user.UserName, ec.user.Email, ec.user.Phone)
+
+	userDt, err, _ := ah.sgr.Do(key, func() (any, error) {
+		trueUser, err := ah.usBd.GetByOpt(ec.ctx, userOpt)
+		return trueUser, err
+	})
+
+	if postgres.ErrUserDontExist.Is(err) {
+		// fake time work
+		_ = bcrypt.CompareHashAndPassword(ah.fakePass, []byte(ec.user.Password))
+		//add info event
+		errBody := middleware.ErrBody{
+			Err:     "invalid_grant",
+			Code:    "INVALID_CREDENTIALS",
+			Message: "Invalid username or password.",
+		}
+		sendErr(w, errBody, ec.traceId, "", ec.ctx, http.StatusUnauthorized, ah.audit)
+		return
+
+	} else if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventLoginFailed, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return
+	}
+
+	userFromDb, ok := userDt.(*domain.User)
+	if !ok {
+		strerr := "Failed convert any user for *domain.User"
+		event := domain.NewFailedEvent(domain.EventLoginFailed, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(userFromDb.Password), []byte(ec.user.Password)); err != nil {
+		//add info event
+		errBody := middleware.ErrBody{
+			Err:     "invalid_grant",
+			Code:    "INVALID_CREDENTIALS",
+			Message: "Invalid username or password.",
+		}
+		sendErr(w, errBody, ec.traceId, "", ec.ctx, http.StatusUnauthorized, ah.audit)
+		return
+	}
+
+	id := userFromDb.Id
+	hexId := hex.EncodeToString(id[:])
+	ec.hexid = hexId
+
+	toReturn = ah.regSession(w, ec, domain.EventLoginFailed)
+	if toReturn {
+		return
+	}
+
+	access, refresh, toReturn := ah.genTokens(w, ec, domain.EventLoginFailed)
+	if toReturn {
+		return
+	}
+
+	jsonBytes, toReturn := ah.makeBodyWithTokens(w, ec, access, refresh, domain.EventLoginFailed)
+	if toReturn {
+		return
+	}
+
+	event := domain.NewSuccessEvent(domain.EventLoginSucces, domain.EventPlaceHandler, hexId, ec.traceId)
+	ah.audit.Log(ec.ctx, event)
+
+	w.Header().Add(HeadContentType, ValHeadAppJson)
+	w.Header().Add(HeadCacheControle, "no-store")
+	w.Header().Add(HeadPragma, "no-cache")
+	w.WriteHeader(http.StatusOK)
+	w.Write(jsonBytes)
+}
+
+func (ah *AuthHandler) validateCheck(w http.ResponseWriter, r *http.Request, failEvent domain.EventType) (*executionContext, bool) {
+
+	ec := &executionContext{}
+
 	ctx := r.Context()
 	traceId, ok := ctx.Value(domain.TraceKey).(string)
 	if !ok {
 		traceId = ""
 	}
 
-	IP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ec.ctx = ctx
+	ec.traceId = traceId
+
+	contentType, _ := httpheader.ContentType(r.Header)
+	if contentType != ValHeadAppJson {
+		err := "Unsupported media type."
+		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &err, "", traceId)
+		ah.audit.Log(ctx, event)
+
+		errBody := middleware.ErrBody{
+			Err:     "invalid_body",
+			Code:    "INVALID_BODY",
+			Message: "Unsupported Media Type",
+		}
+
+		sendErr(w, errBody, traceId, "", ctx, http.StatusUnsupportedMediaType, ah.audit)
+		return nil, true
+	}
+
+	IP, err := getIp(r)
+	if err != nil {
+		err := "The request is missing important fields."
+		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &err, "", traceId)
+		ah.audit.Log(ctx, event)
+
+		sendBadrequest(w, traceId, err, ctx, ah.audit)
+		return nil, true
+	}
+
+	ec.ip = IP
+
 	DeviceId := r.Header.Get(HeadDeviceId)
 	Agent := r.Header.Get(HeadUserAgent)
 
 	if IP == "" || DeviceId == "" || Agent == "" {
 		err := "The request is missing important fields."
-		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &err, "", traceId)
+		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &err, "", traceId)
 		ah.audit.Log(ctx, event)
 
 		sendBadrequest(w, traceId, err, ctx, ah.audit)
-		return
+		return nil, true
 	}
 
+	ec.deviceId = DeviceId
+	ec.agent = Agent
+
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRegistrationBody)
 	jsonData, err := io.ReadAll(r.Body)
 	if err != nil {
 
 		strerr := err.Error()
-		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
+		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &strerr, "", traceId)
 		ah.audit.Log(ctx, event)
 
-		sendIternalServerError(w, traceId, ctx, ah.audit)
-		return
+		sendBadrequest(w, traceId, "The request body contains invalid or missing fields.", ctx, ah.audit)
+		return nil, true
 	}
 
 	var user domain.User
@@ -440,94 +697,89 @@ func (ah *AuthHandler) RegistrationUser(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 
 		strerr := err.Error()
-		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
+		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &strerr, "", traceId)
 		ah.audit.Log(ctx, event)
 
-		sendIternalServerError(w, traceId, ctx, ah.audit)
-		return
+		sendBadrequest(w, traceId, "The request body contains invalid or missing fields.", ctx, ah.audit)
+		return nil, true
 	}
 
-	if user.UserName == "" || user.Password == "" {
-		err := "The request is missing important fields."
-		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &err, "", traceId)
-		ah.audit.Log(ctx, event)
+	ec.user = &user
 
-		errBody := middleware.ErrBody{
-			Err:     "conflict",
-			Code:    "REGISTRATION_FAILED",
-			Message: "Registration failed. Please check your details or try logging in.",
-		}
-		sendErr(w, errBody, traceId, "", ctx, http.StatusConflict, ah.audit)
-		return
-	}
-	key := fmt.Sprintf("%s%s%s%s%s", IP, DeviceId, Agent, user.UserName, user.Password)
+	return ec, false
+}
 
-	idDt, err, _ := ah.sgr.Do(key, func() (any, error) {
-		id, err := ah.usBd.Create(ctx, &user)
-		return id, err
-	})
-
-	id, ok := idDt.(uuid.UUID)
-	if !ok {
-		strerr := "fail convert any in uuid"
-		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
-		ah.audit.Log(ctx, event)
-		sendIternalServerError(w, traceId, ctx, ah.audit)
-		return
+func (ah *AuthHandler) addPasswordHashInExContext(w http.ResponseWriter, ec *executionContext, eventType domain.EventType) bool {
+	if ec.user == nil {
+		return true
 	}
 
+	hash, err := hashPassword(ec.user.Password)
 	if err != nil {
 		strerr := err.Error()
-		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
-		ah.audit.Log(ctx, event)
+		event := domain.NewFailedEvent(eventType, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return true
 	}
 
-	if postgres.ErrUserAlreadyExists.Is(err) {
+	ec.hashPass = hash
 
-		errBody := middleware.ErrBody{
-			Err:     "conflict",
-			Code:    "REGISTRATION_FAILED",
-			Message: "Registration failed. Please check your details or try logging in.",
-		}
-		sendErr(w, errBody, traceId, "", ctx, http.StatusConflict, ah.audit)
-		return
+	return false
+}
 
-	} else if err != nil {
-		sendIternalServerError(w, traceId, ctx, ah.audit)
-		return
-	}
+func (ah *AuthHandler) regSession(w http.ResponseWriter, ec *executionContext, eventType domain.EventType) bool {
 
 	familyId := uuid.NewV7()
+	ec.familyId = familyId
 	session := domain.Session{
-		UserId:     id,
-		DeviceId:   DeviceId,
-		Agent:      Agent,
-		Ip:         IP,
-		Version:    "jwt-1",
+		UserId:     ec.user.Id,
+		DeviceId:   ec.deviceId,
+		Agent:      ec.agent,
+		Ip:         ec.ip,
+		Version:    tokens.FirstVersion,
 		CreatedAt:  time.Now(),
 		LastUpdate: time.Now(),
 	}
 
-	err = ah.ss.Registration(ctx, &session, familyId)
+	err := ah.ss.Registration(ec.ctx, &session, familyId)
 	if err != nil {
 
 		strerr := err.Error()
-		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
-		ah.audit.Log(ctx, event)
+		event := domain.NewFailedEvent(eventType, domain.EventPlaceHandler, &strerr, ec.hexid, ec.traceId)
+		ah.audit.Log(ec.ctx, event)
 
-		sendIternalServerError(w, traceId, ctx, ah.audit)
-		return
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return true
 	}
 
-	access, refresh, err := ah.tu.GeneratePairToken(id, familyId, DeviceId, Agent)
+	return false
+}
+
+func (ah *AuthHandler) genTokens(w http.ResponseWriter, ec *executionContext, eventType domain.EventType) (string, string, bool) {
+	access, refresh, err := ah.tu.GeneratePairToken(ec.user.Id, ec.familyId, ec.deviceId, ec.agent)
 	if err != nil {
-		strerr := err.Error()
-		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
-		ah.audit.Log(ctx, event)
 
-		sendIternalServerError(w, traceId, ctx, ah.audit)
-		return
+		cherr := ah.rollbackForCache(ec.ctx, ec.user.Id, ec.familyId)
+		if cherr != nil {
+			strerr := cherr.Error()
+			event := domain.NewFailedEvent(eventType, domain.EventPlaceHandler, &strerr, ec.hexid, ec.traceId)
+			ah.audit.Log(ec.ctx, event)
+		}
+
+		strerr := err.Error()
+		event := domain.NewFailedEvent(eventType, domain.EventPlaceHandler, &strerr, ec.hexid, ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return "", "", true
 	}
+
+	return access, refresh, false
+}
+
+func (ah *AuthHandler) makeBodyWithTokens(w http.ResponseWriter, ec *executionContext, access, refresh string, eventType domain.EventType) ([]byte, bool) {
 
 	validData := ValidData{
 		AccessToken:  access,
@@ -538,19 +790,23 @@ func (ah *AuthHandler) RegistrationUser(w http.ResponseWriter, r *http.Request) 
 
 	jsonBytes, err := json.Marshal(validData)
 	if err != nil {
-		strerr := err.Error()
-		event := domain.NewFailedEvent(domain.EventRegistrationFailed, domain.EventPlaceHandler, &strerr, "", traceId)
-		ah.audit.Log(ctx, event)
 
-		sendIternalServerError(w, traceId, ctx, ah.audit)
-		return
+		cherr := ah.rollbackForCache(ec.ctx, ec.user.Id, ec.familyId)
+		if cherr != nil {
+			strerr := cherr.Error()
+			event := domain.NewFailedEvent(eventType, domain.EventPlaceHandler, &strerr, ec.hexid, ec.traceId)
+			ah.audit.Log(ec.ctx, event)
+		}
+
+		strerr := err.Error()
+		event := domain.NewFailedEvent(eventType, domain.EventPlaceHandler, &strerr, ec.hexid, ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return nil, true
 	}
 
-	w.Header().Add(HeadContentType, ValHeadAppJson)
-	w.Header().Add(HeadCacheControle, "no-store")
-	w.Header().Add(HeadPragma, "no-cache")
-	w.WriteHeader(http.StatusCreated)
-	w.Write(jsonBytes)
+	return jsonBytes, false
 }
 
 func sendErr(w http.ResponseWriter, errBody middleware.ErrBody, traceId, wwwErr string, ctx context.Context, code int,
@@ -607,4 +863,47 @@ func sendInvalidToken(w http.ResponseWriter, traceId string, ctx context.Context
 	sendErr(w, httperr, traceId,
 		`Bearer error="invalid_token", error_description="The token is invalid or malformed."`,
 		ctx, http.StatusBadRequest, audit)
+}
+
+func hashPassword(password string) (string, error) {
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
+	if err != nil {
+		return "", err
+	}
+
+	return string(hash), nil
+}
+
+func (ah *AuthHandler) rollbackForCache(ctx context.Context, userId, familyId uuid.UUID) error {
+	err := ah.ss.DeleteByRefresh(ctx, userId, familyId)
+	return err
+}
+
+func getIp(r *http.Request) (string, error) {
+
+	xForwardedFor := r.Header.Get(HeadXForwardedFor)
+	if xForwardedFor != "" {
+		ips := strings.Split(xForwardedFor, ",")
+		if len(ips) > 0 {
+			return strings.TrimSpace(ips[0]), nil
+		}
+	}
+
+	xRealIp := r.Header.Get(HeadXRealIP)
+	if xRealIp != "" {
+		return strings.TrimSpace(xRealIp), nil
+	}
+
+	data := httpheader.Forwarded(r.Header)
+	if len(data) > 0 {
+		return data[0].For.IP.String(), nil
+	}
+
+	IP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return "", err
+	}
+
+	return IP, nil
 }

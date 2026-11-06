@@ -47,13 +47,29 @@ func (us *UserStore) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, e
 // TODO add custom error when fields empty
 func (us *UserStore) Create(ctx context.Context, user *domain.User) (uuid.UUID, error) {
 
+	// nil or string
+	var email any
+	if user.Email != "" {
+		email = user.Email
+	} else {
+		email = nil
+	}
+
+	// nil or string
+	var phone any
+	if user.Phone != "" {
+		phone = user.Phone
+	} else {
+		phone = nil
+	}
+
 	pool := us.db.GetPool()
 
 	var id uuid.UUID
 	err := pool.QueryRow(ctx,
 		`INSERT INTO users (username, pass, email, phone)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id;`, &user.UserName, &user.Password, &user.Email, &user.Phone).Scan(&id)
+		RETURNING id;`, &user.UserName, &user.Password, email, phone).Scan(&id)
 
 	if err != nil {
 		errUnicViolation := DbErrorFromUnicViolation(err)
@@ -196,6 +212,74 @@ func (us *UserStore) GetByPhone(ctx context.Context, phone string) (*domain.User
 		} else {
 			return nil, err
 		}
+	}
+
+	return &user, nil
+}
+
+func (us *UserStore) HardDelete(ctx context.Context, id uuid.UUID) error {
+
+	pool := us.db.GetPool()
+
+	result, err := pool.Exec(ctx,
+		`DELETE FROM users WHERE id = $1;`, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return ErrUserDontExist.Clone()
+	}
+
+	return nil
+}
+
+func (us *UserStore) GetByOpt(ctx context.Context, userOpt *domain.UserOpt) (*domain.User, error) {
+
+	psql := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar)
+	qr := psql.Select("id, username, pass, email, phone, created_at, is_deleted").
+		From("users").
+		Where("is_deleted = false")
+
+	argIndex := 1
+
+	if userOpt.UserName.Define && userOpt.UserName.Valid {
+		qr = qr.Where(squirrel.Eq{"username": userOpt.UserName.Value})
+		argIndex++
+	}
+
+	if userOpt.Email.Define && userOpt.Email.Valid {
+		qr = qr.Where(squirrel.Eq{"email": userOpt.Email.Value})
+		argIndex++
+	}
+
+	if userOpt.Phone.Define && userOpt.Phone.Valid {
+		qr = qr.Where(squirrel.Eq{"phone": userOpt.Phone.Value})
+		argIndex++
+	}
+
+	if userOpt.IsDeleted.Define && userOpt.IsDeleted.Valid {
+		qr = qr.Where(squirrel.Eq{"is_deleted": userOpt.IsDeleted.Value})
+		argIndex++
+	}
+
+	query, args, err := qr.ToSql()
+	if err != nil {
+		return nil, ErrConvertQuery.Clone()
+	}
+
+	pool := us.db.GetPool()
+
+	var user domain.User
+	err = pool.QueryRow(ctx, query, args...).Scan(
+		&user.Id, &user.UserName, &user.Password, &user.Email,
+		&user.Phone, &user.CreatedAt, &user.IsDeleted)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserDontExist.Clone()
+		}
+		return nil, err
 	}
 
 	return &user, nil

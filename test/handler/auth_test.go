@@ -781,7 +781,7 @@ func TestRegistrationUser(t *testing.T) {
 			},
 		},
 		"empty_field": {
-			Comm:        `ошибочный тест когда username уже существует, вернуть ошибку`,
+			Comm:        `ошибочный тест когда прислали пустые username и password`,
 			IsError:     true,
 			IpReq:       ip1,
 			AgentReq:    agent1,
@@ -799,14 +799,14 @@ func TestRegistrationUser(t *testing.T) {
 
 				bodyJson := `
 				{
-					"error": "conflict",
-					"code": "REGISTRATION_FAILED",
-					"message": "Registration failed. Please check your details or try logging in."
+					"error": "invalid_request",
+					"code": "VALIDATION_ERROR",
+					"message": "Username and password are required."
 				}
 				`
 				resp := httptest.NewRecorder()
 				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-				resp.WriteHeader(http.StatusConflict)
+				resp.WriteHeader(http.StatusBadRequest)
 				resp.Write([]byte(bodyJson))
 
 				return &ResponseResult{

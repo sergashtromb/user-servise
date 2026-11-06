@@ -26,6 +26,20 @@ type UserOpt struct {
 	IsDeleted opt.Field[bool]   `json:"is_delete"`
 }
 
+// ToUserOpt converts a User to a UserOpt.
+// String fields are Define/Valid only when non-empty.
+func ToUserOpt(u *User) *UserOpt {
+	if u == nil {
+		return nil
+	}
+	return &UserOpt{
+		UserName:  opt.Field[string]{Value: u.UserName, Define: u.UserName != "", Valid: u.UserName != ""},
+		Email:     opt.Field[string]{Value: u.Email, Define: u.Email != "", Valid: u.Email != ""},
+		Phone:     opt.Field[string]{Value: u.Phone, Define: u.Phone != "", Valid: u.Phone != ""},
+		IsDeleted: opt.Field[bool]{Value: u.IsDeleted, Define: true, Valid: true},
+	}
+}
+
 type Session struct {
 	UserId     uuid.UUID
 	DeviceId   string

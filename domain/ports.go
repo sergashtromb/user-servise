@@ -10,8 +10,10 @@ type UserStore interface {
 	Update(ctx context.Context, id uuid.UUID, userOpt *UserOpt) error
 	Create(ctx context.Context, user *User) (uuid.UUID, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	HardDelete(ctx context.Context, id uuid.UUID) error
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	GetByPhone(ctx context.Context, phone string) (*User, error)
+	GetByOpt(ctx context.Context, userOpt *UserOpt) (*User, error)
 }
 
 type SessionStore interface {

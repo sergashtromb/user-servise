@@ -24,6 +24,7 @@ const (
 	HeadWWWAuthenticate = "WWW-Authenticate"
 	HeadContentType     = "Content-Type"
 	HeadUserAgent       = "User-Agent"
+	FirstVersion        = "jwt-1"
 )
 
 var (
@@ -123,8 +124,8 @@ func (tu *TokenUtil) GeneratePairToken(userId, familyId uuid.UUID, deviceId, age
 	accessSecret := tu.cm.Get().TokenConf.AccessBt
 	refreshSecret := tu.cm.Get().TokenConf.RefreshBt
 
-	accessClaims := NewAccessToken(userId, familyId, deviceId, agent, "jwt-1", tu.cm.Get().TokenConf.AccessLifeTime)
-	refreshClaims := NewRefreshToken(userId, familyId, "jwt-1", tu.cm.Get().TokenConf.RefreshLifeTime)
+	accessClaims := NewAccessToken(userId, familyId, deviceId, agent, FirstVersion, tu.cm.Get().TokenConf.AccessLifeTime)
+	refreshClaims := NewRefreshToken(userId, familyId, FirstVersion, tu.cm.Get().TokenConf.RefreshLifeTime)
 
 	access := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	signedAccess, err := access.SignedString(accessSecret)

@@ -65,3 +65,16 @@ func (m *UserStoreMock) GetByPhone(ctx context.Context, phone string) (*User, er
 	}
 	return nil, args.Error(1)
 }
+
+func (m *UserStoreMock) HardDelete(ctx context.Context, id uuid.UUID) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
+func (m *UserStoreMock) GetByOpt(ctx context.Context, userOpt *UserOpt) (*User, error) {
+	args := m.Called(ctx, userOpt)
+	if v := args.Get(0); v != nil {
+		return v.(*User), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
