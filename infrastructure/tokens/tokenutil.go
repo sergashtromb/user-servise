@@ -164,7 +164,7 @@ func (tu *TokenUtil) ValidAccessToken(token string) (*AccessToken, error) {
 			return nil, ErrExpToken
 		} else if errors.Is(err, jwt.ErrTokenSignatureInvalid) {
 			return nil, ErrInvalidSignToken
-		} else if errors.Is(err, jwt.ErrTokenInvalidClaims) {
+		} else if errors.Is(err, jwt.ErrTokenInvalidClaims) || errors.Is(err, jwt.ErrTokenMalformed) {
 			return nil, ErrInvalidToken
 		}
 		return nil, err
@@ -177,7 +177,7 @@ func (tu *TokenUtil) ValidAccessToken(token string) (*AccessToken, error) {
 
 	if tokenData.RegisteredClaims.IssuedAt != nil &&
 		tokenData.RegisteredClaims.IssuedAt.After(time.Now()) {
-		return nil, ErrFutureDateToken
+		return tokenData, ErrFutureDateToken
 	}
 
 	return tokenData, nil

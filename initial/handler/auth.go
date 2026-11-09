@@ -13,6 +13,7 @@ import (
 	"user_service/config"
 	"user_service/domain"
 	"user_service/infrastructure/postgres"
+	"user_service/infrastructure/reporedis"
 	"user_service/infrastructure/reporedis/custerr"
 	"user_service/infrastructure/tokens"
 	"user_service/initial/middleware"
@@ -35,6 +36,7 @@ const (
 	HeadXForwardedFor = "X-Forwarded-For"
 	HeadXRealIP       = "X-Real-IP"
 	HeadForwarded     = "Forwarded"
+	Bearer            = "bearer "
 
 	ValHeadAppJson      = "application/json"
 	MaxRegistrationBody = 64 << 10 // 64 KiB
@@ -54,6 +56,7 @@ type AuthHandler struct {
 	tu       *tokens.TokenUtil
 	sgr      singleflight.Group
 	usBd     domain.UserStore
+	usCh     *reporedis.UserStore
 	fakePass []byte
 }
 
@@ -70,7 +73,7 @@ type executionContext struct {
 }
 
 func NewAuthHandler(cm *config.ConfigManager, audit domain.AuditService, ss domain.SessionStore, tu *tokens.TokenUtil,
-	usBd domain.UserStore) *AuthHandler {
+	usBd domain.UserStore, usCh *reporedis.UserStore) *AuthHandler {
 	// все условия соблюдены, единственная причина почему отвалился это не сработал rand с системными вызовами
 	//	тогда в целом вся система не сможет работать корректно и коректно выдавать хеши пароль, ставим панику
 	fakePass, err := bcrypt.GenerateFromPassword([]byte("fake_password"), 10)
@@ -84,6 +87,7 @@ func NewAuthHandler(cm *config.ConfigManager, audit domain.AuditService, ss doma
 		ss:       ss,
 		tu:       tu,
 		usBd:     usBd,
+		usCh:     usCh,
 		fakePass: fakePass,
 	}
 }
@@ -167,7 +171,7 @@ func (ah *AuthHandler) UpdateRefreshToken(w http.ResponseWriter, r *http.Request
 			return
 
 		} else if tokens.ErrInvalidSignToken.Is(err) || tokens.ErrInvalidToken.Is(err) {
-			sendInvalidToken(w, traceId, ctx, ah.audit)
+			sendInvalidToken(w, traceId, ctx, ah.audit, 0)
 			return
 
 		} else if tokens.ErrFutureDateToken.Is(err) {
@@ -203,7 +207,7 @@ func (ah *AuthHandler) UpdateRefreshToken(w http.ResponseWriter, r *http.Request
 		event := domain.NewFailedEvent(domain.EventUpdateVersionTokenFailed, domain.EventPlaceHandler,
 			&strerr, "", traceId)
 		ah.audit.Log(ctx, event)
-		sendInvalidToken(w, traceId, ctx, ah.audit)
+		sendInvalidToken(w, traceId, ctx, ah.audit, 0)
 		return
 	}
 
@@ -215,7 +219,7 @@ func (ah *AuthHandler) UpdateRefreshToken(w http.ResponseWriter, r *http.Request
 		ah.audit.Log(ctx, event)
 
 		if custerr.ErrBadArgs.Is(err) {
-			sendInvalidToken(w, traceId, ctx, ah.audit)
+			sendInvalidToken(w, traceId, ctx, ah.audit, 0)
 			return
 		} else if custerr.ErrNotFound.Is(err) {
 			httperr := middleware.ErrBody{
@@ -433,7 +437,12 @@ func (ah *AuthHandler) UpdateRefreshToken(w http.ResponseWriter, r *http.Request
 
 func (ah *AuthHandler) RegistrationUser(w http.ResponseWriter, r *http.Request) {
 
-	ec, toReturn := ah.validateCheck(w, r, domain.EventRegistrationFailed)
+	ec, toReturn := ah.validateCheck(w, r, domain.EventRegistrationFailed, true)
+	if toReturn {
+		return
+	}
+
+	toReturn = ah.getUserFromBody(w, r, ec, domain.EventRegistrationFailed)
 	if toReturn {
 		return
 	}
@@ -524,7 +533,12 @@ func (ah *AuthHandler) RegistrationUser(w http.ResponseWriter, r *http.Request) 
 
 func (ah *AuthHandler) SingIn(w http.ResponseWriter, r *http.Request) {
 
-	ec, toReturn := ah.validateCheck(w, r, domain.EventLoginFailed)
+	ec, toReturn := ah.validateCheck(w, r, domain.EventLoginFailed, true)
+	if toReturn {
+		return
+	}
+
+	toReturn = ah.getUserFromBody(w, r, ec, domain.EventRegistrationFailed)
 	if toReturn {
 		return
 	}
@@ -595,6 +609,7 @@ func (ah *AuthHandler) SingIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ec.user = userFromDb
 	id := userFromDb.Id
 	hexId := hex.EncodeToString(id[:])
 	ec.hexid = hexId
@@ -624,7 +639,137 @@ func (ah *AuthHandler) SingIn(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonBytes)
 }
 
-func (ah *AuthHandler) validateCheck(w http.ResponseWriter, r *http.Request, failEvent domain.EventType) (*executionContext, bool) {
+func (ah *AuthHandler) Authentication(w http.ResponseWriter, r *http.Request) {
+
+	ec, toReturn := ah.validateCheck(w, r, domain.EventAutheticationFailed, false)
+	if toReturn {
+		return
+	}
+
+	// Проверка Bearer-токена
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		err := "Non bearer scheme"
+		event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceHandler, &err, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+		sendInvalidToken(w, ec.traceId, ec.ctx, ah.audit, http.StatusUnauthorized)
+		return
+	}
+
+	token, ok := getBearerData(authHeader)
+	if !ok {
+		err := "Non bearer scheme"
+		event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceHandler, &err, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+		sendInvalidToken(w, ec.traceId, ec.ctx, ah.audit, http.StatusUnauthorized)
+		return
+	}
+
+	if token == "" {
+		sendInvalidToken(w, ec.traceId, ec.ctx, ah.audit, http.StatusUnauthorized)
+		return
+	}
+
+	accessToken, err := ah.tu.ValidAccessToken(token)
+	if tokens.ErrExpToken.Is(err) {
+
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		errBody := middleware.ErrBody{
+			Err:     "invalid_grant",
+			Code:    "INVALID_GRANT",
+			Message: "The access token has expired. Please re-authenticate.",
+		}
+		sendErr(w, errBody, ec.traceId, `Bearer error="invalid_token", error_description="The access token expired"`,
+			ec.ctx, http.StatusUnauthorized, ah.audit)
+		return
+
+	} else if tokens.ErrFutureDateToken.Is(err) {
+
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		sserr := ah.ss.DeleteByRefresh(ec.ctx, accessToken.UserId, accessToken.FamilyId)
+		if sserr != nil {
+			strerr = sserr.Error()
+			event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceHandler, &strerr,
+				hex.EncodeToString(accessToken.UserId[:]), ec.traceId)
+			ah.audit.Log(ec.ctx, event)
+		}
+
+		errBody := middleware.ErrBody{
+			Err:     "invalid_token",
+			Code:    "INVALID_TOKEN",
+			Message: "Token reuse detected. Session has been revoked.",
+		}
+		sendErr(w, errBody, ec.traceId, `Bearer error="invalid_token", error_description="Token reuse detected. Session has been revoked."`,
+			ec.ctx, http.StatusUnauthorized, ah.audit)
+
+		return
+	} else if tokens.ErrInvalidSignToken.Is(err) || tokens.ErrInvalidToken.Is(err) {
+		sendInvalidToken(w, ec.traceId, ec.ctx, ah.audit, http.StatusUnauthorized)
+		return
+	}
+
+	session, err := ah.ss.GetSessionByFamilyId(ec.ctx, accessToken.UserId, accessToken.FamilyId)
+	if custerr.ErrNotFound.Is(err) {
+		errBody := middleware.ErrBody{
+			Err:     "invalid_token",
+			Code:    "INVALID_TOKEN",
+			Message: "The session is invalid or has been revoked.",
+		}
+		sendErr(w, errBody, ec.traceId,
+			`Bearer error="invalid_token", error_description="The session is invalid or has been revoked."`,
+			ec.ctx, http.StatusUnauthorized, ah.audit)
+		return
+	} else if err != nil {
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return
+	}
+
+	if (session.UserId != accessToken.UserId || session.Agent != accessToken.Agent || session.DeviceId != accessToken.DeviceId ||
+		session.Version != accessToken.Version) || (session.Agent != ec.agent || session.DeviceId != ec.deviceId) {
+
+		strerr := "Session context mismatch"
+		event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+
+		sserr := ah.ss.DeleteByRefresh(ec.ctx, accessToken.UserId, accessToken.FamilyId)
+		if sserr != nil {
+			strerr = sserr.Error()
+			event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceHandler, &strerr,
+				hex.EncodeToString(accessToken.UserId[:]), ec.traceId)
+			ah.audit.Log(ec.ctx, event)
+		}
+
+		errBody := middleware.ErrBody{
+			Err:     "invalid_grant",
+			Code:    "SESSION_CONTEXT_MISMATCH",
+			Message: "Session context mismatch. Please log in again.",
+		}
+		sendErr(w, errBody, ec.traceId,
+			`Bearer error="invalid_grant", error_description="Session context mismatch. Please log in again."`,
+			ec.ctx, http.StatusUnauthorized, ah.audit)
+		return
+	}
+
+	if ec.ip != session.Ip {
+		err = ah.ss.UpdateIpAdress(ec.ctx, session.UserId, accessToken.FamilyId, ec.ip)
+		if err != nil {
+			strerr := err.Error()
+			event := domain.NewFailedEvent(domain.EventUpdateSessionIPFailed, domain.EventPlaceHandler, &strerr,
+				hex.EncodeToString(accessToken.UserId[:]), ec.traceId)
+			ah.audit.Log(ec.ctx, event)
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (ah *AuthHandler) validateCheck(w http.ResponseWriter, r *http.Request, failEvent domain.EventType, haveBody bool) (*executionContext, bool) {
 
 	ec := &executionContext{}
 
@@ -637,20 +782,22 @@ func (ah *AuthHandler) validateCheck(w http.ResponseWriter, r *http.Request, fai
 	ec.ctx = ctx
 	ec.traceId = traceId
 
-	contentType, _ := httpheader.ContentType(r.Header)
-	if contentType != ValHeadAppJson {
-		err := "Unsupported media type."
-		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &err, "", traceId)
-		ah.audit.Log(ctx, event)
+	if haveBody {
+		contentType, _ := httpheader.ContentType(r.Header)
+		if contentType != ValHeadAppJson {
+			err := "Unsupported media type."
+			event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &err, "", traceId)
+			ah.audit.Log(ctx, event)
 
-		errBody := middleware.ErrBody{
-			Err:     "invalid_body",
-			Code:    "INVALID_BODY",
-			Message: "Unsupported Media Type",
+			errBody := middleware.ErrBody{
+				Err:     "invalid_body",
+				Code:    "INVALID_BODY",
+				Message: "Unsupported Media Type",
+			}
+
+			sendErr(w, errBody, traceId, "", ctx, http.StatusUnsupportedMediaType, ah.audit)
+			return nil, true
 		}
-
-		sendErr(w, errBody, traceId, "", ctx, http.StatusUnsupportedMediaType, ah.audit)
-		return nil, true
 	}
 
 	IP, err := getIp(r)
@@ -680,16 +827,25 @@ func (ah *AuthHandler) validateCheck(w http.ResponseWriter, r *http.Request, fai
 	ec.deviceId = DeviceId
 	ec.agent = Agent
 
+	return ec, false
+}
+
+func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
+
+}
+
+func (ah *AuthHandler) getUserFromBody(w http.ResponseWriter, r *http.Request, ec *executionContext, failEvent domain.EventType) bool {
+
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRegistrationBody)
 	jsonData, err := io.ReadAll(r.Body)
 	if err != nil {
 
 		strerr := err.Error()
-		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &strerr, "", traceId)
-		ah.audit.Log(ctx, event)
+		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
 
-		sendBadrequest(w, traceId, "The request body contains invalid or missing fields.", ctx, ah.audit)
-		return nil, true
+		sendBadrequest(w, ec.traceId, "The request body contains invalid or missing fields.", ec.ctx, ah.audit)
+		return true
 	}
 
 	var user domain.User
@@ -697,16 +853,15 @@ func (ah *AuthHandler) validateCheck(w http.ResponseWriter, r *http.Request, fai
 	if err != nil {
 
 		strerr := err.Error()
-		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &strerr, "", traceId)
-		ah.audit.Log(ctx, event)
+		event := domain.NewFailedEvent(failEvent, domain.EventPlaceHandler, &strerr, "", ec.traceId)
+		ah.audit.Log(ec.ctx, event)
 
-		sendBadrequest(w, traceId, "The request body contains invalid or missing fields.", ctx, ah.audit)
-		return nil, true
+		sendBadrequest(w, ec.traceId, "The request body contains invalid or missing fields.", ec.ctx, ah.audit)
+		return true
 	}
 
 	ec.user = &user
-
-	return ec, false
+	return false
 }
 
 func (ah *AuthHandler) addPasswordHashInExContext(w http.ResponseWriter, ec *executionContext, eventType domain.EventType) bool {
@@ -854,7 +1009,10 @@ func sendBadrequest(w http.ResponseWriter, traceId, errstr string, ctx context.C
 	sendErr(w, httperr, traceId, "", ctx, http.StatusBadRequest, audit)
 }
 
-func sendInvalidToken(w http.ResponseWriter, traceId string, ctx context.Context, audit domain.AuditService) {
+func sendInvalidToken(w http.ResponseWriter, traceId string, ctx context.Context, audit domain.AuditService, code int) {
+	if code == 0 {
+		code = http.StatusBadRequest
+	}
 	httperr := middleware.ErrBody{
 		Err:     "invalid_token",
 		Code:    "INVALID_TOKEN",
@@ -862,7 +1020,7 @@ func sendInvalidToken(w http.ResponseWriter, traceId string, ctx context.Context
 	}
 	sendErr(w, httperr, traceId,
 		`Bearer error="invalid_token", error_description="The token is invalid or malformed."`,
-		ctx, http.StatusBadRequest, audit)
+		ctx, code, audit)
 }
 
 func hashPassword(password string) (string, error) {
@@ -906,4 +1064,17 @@ func getIp(r *http.Request) (string, error) {
 	}
 
 	return IP, nil
+}
+
+func getBearerData(header string) (string, bool) {
+
+	if len(header) < len(Bearer) {
+		return "", false
+	}
+
+	if strings.ToLower(header[:len(Bearer)]) == Bearer {
+		return strings.TrimSpace(header[len(Bearer):]), true
+	}
+
+	return "", false
 }
