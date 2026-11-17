@@ -16,6 +16,13 @@ type UserStore interface {
 	GetByOpt(ctx context.Context, userOpt *UserOpt) (*User, error)
 }
 
+type UserCacheStore interface {
+	Set(ctx context.Context, user *User) error
+	Get(ctx context.Context, id uuid.UUID) (*User, error)
+	Update(ctx context.Context, id uuid.UUID, userOpt *UserOpt) error
+	Del(ctx context.Context, key string) error
+}
+
 type SessionStore interface {
 	Registration(ctx context.Context, session *Session, familyId uuid.UUID) error
 	GetAllSession(ctx context.Context, userId uuid.UUID) ([]Session, error)

@@ -13,7 +13,6 @@ import (
 	"user_service/config"
 	"user_service/domain"
 	"user_service/infrastructure/postgres"
-	"user_service/infrastructure/reporedis"
 	"user_service/infrastructure/reporedis/custerr"
 	"user_service/infrastructure/tokens"
 	"user_service/initial/middleware"
@@ -56,7 +55,7 @@ type AuthHandler struct {
 	tu       *tokens.TokenUtil
 	sgr      singleflight.Group
 	usBd     domain.UserStore
-	usCh     *reporedis.UserStore
+	usCh     domain.UserCacheStore
 	fakePass []byte
 }
 
@@ -70,10 +69,11 @@ type executionContext struct {
 	hexid    string
 	hashPass string
 	familyId uuid.UUID
+	userId   uuid.UUID
 }
 
 func NewAuthHandler(cm *config.ConfigManager, audit domain.AuditService, ss domain.SessionStore, tu *tokens.TokenUtil,
-	usBd domain.UserStore, usCh *reporedis.UserStore) *AuthHandler {
+	usBd domain.UserStore, usCh domain.UserCacheStore) *AuthHandler {
 	// все условия соблюдены, единственная причина почему отвалился это не сработал rand с системными вызовами
 	//	тогда в целом вся система не сможет работать корректно и коректно выдавать хеши пароль, ставим панику
 	fakePass, err := bcrypt.GenerateFromPassword([]byte("fake_password"), 10)
@@ -641,9 +641,89 @@ func (ah *AuthHandler) SingIn(w http.ResponseWriter, r *http.Request) {
 
 func (ah *AuthHandler) Authentication(w http.ResponseWriter, r *http.Request) {
 
-	ec, toReturn := ah.validateCheck(w, r, domain.EventAutheticationFailed, false)
+	_, toReturn := ah.checkAuth(w, r)
 	if toReturn {
 		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
+
+	ex, toReturn := ah.checkAuth(w, r)
+	if toReturn {
+		return
+	}
+
+	var user *domain.User
+	userFromCache, err := ah.usCh.Get(ex.ctx, ex.userId)
+	if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventGetUserIntoCacheFailed, domain.EventPlaceHandler, &strerr, "", ex.traceId)
+		ah.audit.Log(ex.ctx, event)
+	}
+
+	if userFromCache != nil {
+		user = userFromCache
+	} else {
+		userFromDb, err := ah.usBd.GetByID(ex.ctx, ex.userId)
+		if err != nil {
+			strerr := err.Error()
+			event := domain.NewFailedEvent(domain.EventGetUser, domain.EventPlaceHandler, &strerr, "", ex.traceId)
+			ah.audit.Log(ex.ctx, event)
+			sendIternalServerError(w, ex.traceId, ex.ctx, ah.audit)
+			return
+		}
+
+		if userFromDb != nil {
+			user = userFromDb
+		} else {
+			errBody := middleware.ErrBody{
+				Err:     "user_not_found",
+				Code:    "USER_NOT_FOUND",
+				Message: "User not found or has been deleted.",
+			}
+			sendErr(w, errBody, ex.traceId, "", ex.ctx, http.StatusNotFound, ah.audit)
+			return
+		}
+	}
+
+	err = ah.usCh.Set(ex.ctx, user)
+	if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventSendUserIntoCacheFailed, domain.EventPlaceHandler, &strerr, "", ex.traceId)
+		ah.audit.Log(ex.ctx, event)
+	}
+
+	data := map[string]interface{}{
+		"username":   user.UserName,
+		"phone":      user.Phone,
+		"email":      user.Email,
+		"created_at": user.CreatedAt,
+	}
+
+	jsonData, err := json.Marshal(&data)
+	if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventGetUser, domain.EventPlaceHandler, &strerr, "", ex.traceId)
+		ah.audit.Log(ex.ctx, event)
+		sendIternalServerError(w, ex.traceId, ex.ctx, ah.audit)
+		return
+	}
+
+	w.Header().Add(HeadContentType, ValHeadAppJson)
+	w.Header().Add(HeadCacheControle, "no-store")
+	w.Header().Add(HeadPragma, "no-cache")
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(jsonData)
+}
+
+func (ah *AuthHandler) checkAuth(w http.ResponseWriter, r *http.Request) (*executionContext, bool) {
+	ec, toReturn := ah.validateCheck(w, r, domain.EventAutheticationFailed, false)
+	if toReturn {
+		return nil, true
 	}
 
 	// Проверка Bearer-токена
@@ -653,7 +733,7 @@ func (ah *AuthHandler) Authentication(w http.ResponseWriter, r *http.Request) {
 		event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceHandler, &err, "", ec.traceId)
 		ah.audit.Log(ec.ctx, event)
 		sendInvalidToken(w, ec.traceId, ec.ctx, ah.audit, http.StatusUnauthorized)
-		return
+		return nil, true
 	}
 
 	token, ok := getBearerData(authHeader)
@@ -662,12 +742,12 @@ func (ah *AuthHandler) Authentication(w http.ResponseWriter, r *http.Request) {
 		event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceHandler, &err, "", ec.traceId)
 		ah.audit.Log(ec.ctx, event)
 		sendInvalidToken(w, ec.traceId, ec.ctx, ah.audit, http.StatusUnauthorized)
-		return
+		return nil, true
 	}
 
 	if token == "" {
 		sendInvalidToken(w, ec.traceId, ec.ctx, ah.audit, http.StatusUnauthorized)
-		return
+		return nil, true
 	}
 
 	accessToken, err := ah.tu.ValidAccessToken(token)
@@ -684,7 +764,7 @@ func (ah *AuthHandler) Authentication(w http.ResponseWriter, r *http.Request) {
 		}
 		sendErr(w, errBody, ec.traceId, `Bearer error="invalid_token", error_description="The access token expired"`,
 			ec.ctx, http.StatusUnauthorized, ah.audit)
-		return
+		return nil, true
 
 	} else if tokens.ErrFutureDateToken.Is(err) {
 
@@ -708,10 +788,10 @@ func (ah *AuthHandler) Authentication(w http.ResponseWriter, r *http.Request) {
 		sendErr(w, errBody, ec.traceId, `Bearer error="invalid_token", error_description="Token reuse detected. Session has been revoked."`,
 			ec.ctx, http.StatusUnauthorized, ah.audit)
 
-		return
+		return nil, true
 	} else if tokens.ErrInvalidSignToken.Is(err) || tokens.ErrInvalidToken.Is(err) {
 		sendInvalidToken(w, ec.traceId, ec.ctx, ah.audit, http.StatusUnauthorized)
-		return
+		return nil, true
 	}
 
 	session, err := ah.ss.GetSessionByFamilyId(ec.ctx, accessToken.UserId, accessToken.FamilyId)
@@ -724,10 +804,10 @@ func (ah *AuthHandler) Authentication(w http.ResponseWriter, r *http.Request) {
 		sendErr(w, errBody, ec.traceId,
 			`Bearer error="invalid_token", error_description="The session is invalid or has been revoked."`,
 			ec.ctx, http.StatusUnauthorized, ah.audit)
-		return
+		return nil, true
 	} else if err != nil {
 		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
-		return
+		return nil, true
 	}
 
 	if (session.UserId != accessToken.UserId || session.Agent != accessToken.Agent || session.DeviceId != accessToken.DeviceId ||
@@ -753,7 +833,7 @@ func (ah *AuthHandler) Authentication(w http.ResponseWriter, r *http.Request) {
 		sendErr(w, errBody, ec.traceId,
 			`Bearer error="invalid_grant", error_description="Session context mismatch. Please log in again."`,
 			ec.ctx, http.StatusUnauthorized, ah.audit)
-		return
+		return nil, true
 	}
 
 	if ec.ip != session.Ip {
@@ -766,7 +846,9 @@ func (ah *AuthHandler) Authentication(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.WriteHeader(http.StatusOK)
+	ec.userId = session.UserId
+
+	return ec, false
 }
 
 func (ah *AuthHandler) validateCheck(w http.ResponseWriter, r *http.Request, failEvent domain.EventType, haveBody bool) (*executionContext, bool) {
@@ -828,10 +910,6 @@ func (ah *AuthHandler) validateCheck(w http.ResponseWriter, r *http.Request, fai
 	ec.agent = Agent
 
 	return ec, false
-}
-
-func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
-
 }
 
 func (ah *AuthHandler) getUserFromBody(w http.ResponseWriter, r *http.Request, ec *executionContext, failEvent domain.EventType) bool {
