@@ -72,6 +72,12 @@ type executionContext struct {
 	userId   uuid.UUID
 }
 
+var NotFoundBody = middleware.ErrBody{
+	Err:     "not_found",
+	Code:    "USER_NOT_FOUND",
+	Message: "User not found or has been deleted.",
+}
+
 func NewAuthHandler(cm *config.ConfigManager, audit domain.AuditService, ss domain.SessionStore, tu *tokens.TokenUtil,
 	usBd domain.UserStore, usCh domain.UserCacheStore) *AuthHandler {
 	// все условия соблюдены, единственная причина почему отвалился это не сработал rand с системными вызовами
@@ -656,7 +662,9 @@ func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var getFromDb = false
 	var user *domain.User
+
 	userFromCache, err := ah.usCh.Get(ex.ctx, ex.userId)
 	if err != nil {
 		strerr := err.Error()
@@ -667,8 +675,14 @@ func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
 	if userFromCache != nil {
 		user = userFromCache
 	} else {
+
 		userFromDb, err := ah.usBd.GetByID(ex.ctx, ex.userId)
-		if err != nil {
+		if postgres.ErrUserDontExist.Is(err) {
+
+			sendErr(w, NotFoundBody, ex.traceId, "", ex.ctx, http.StatusNotFound, ah.audit)
+			return
+		} else if err != nil {
+
 			strerr := err.Error()
 			event := domain.NewFailedEvent(domain.EventGetUser, domain.EventPlaceHandler, &strerr, "", ex.traceId)
 			ah.audit.Log(ex.ctx, event)
@@ -678,22 +692,25 @@ func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
 
 		if userFromDb != nil {
 			user = userFromDb
+			getFromDb = true
 		} else {
-			errBody := middleware.ErrBody{
-				Err:     "user_not_found",
-				Code:    "USER_NOT_FOUND",
-				Message: "User not found or has been deleted.",
-			}
-			sendErr(w, errBody, ex.traceId, "", ex.ctx, http.StatusNotFound, ah.audit)
+			sendErr(w, NotFoundBody, ex.traceId, "", ex.ctx, http.StatusNotFound, ah.audit)
 			return
 		}
 	}
 
-	err = ah.usCh.Set(ex.ctx, user)
-	if err != nil {
-		strerr := err.Error()
-		event := domain.NewFailedEvent(domain.EventSendUserIntoCacheFailed, domain.EventPlaceHandler, &strerr, "", ex.traceId)
-		ah.audit.Log(ex.ctx, event)
+	if user.IsDeleted {
+		sendErr(w, NotFoundBody, ex.traceId, "", ex.ctx, http.StatusNotFound, ah.audit)
+		return
+	}
+
+	if getFromDb {
+		err = ah.usCh.Set(ex.ctx, user)
+		if err != nil {
+			strerr := err.Error()
+			event := domain.NewFailedEvent(domain.EventSendUserIntoCacheFailed, domain.EventPlaceHandler, &strerr, "", ex.traceId)
+			ah.audit.Log(ex.ctx, event)
+		}
 	}
 
 	data := map[string]interface{}{
