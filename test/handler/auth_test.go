@@ -197,29 +197,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 					Return(nil).
 					Once()
 			},
-			fnReadyAnswer: func() *ResponseResult {
-
-				bodyJson := `
-				{
-					"access_token": "access_token",
-					"token_type": "Bearer",
-					"expires_in": 900,
-					"refresh_token": "refresh_token"
-				}
-				`
-				resp := httptest.NewRecorder()
-				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-				resp.Header().Set("Cache-Control", "no-store")
-				resp.Header().Set("Pragma", "no-cache")
-				resp.WriteHeader(http.StatusOK)
-				resp.Write([]byte(bodyJson))
-
-				return &ResponseResult{
-					Code:    resp.Code,
-					Headers: resp.Header(),
-					Body:    resp.Body.Bytes(),
-				}
-			},
+			fnReadyAnswer:  successAnswer200,
 			fnCheckMethods: checkMethods,
 		},
 		"correct_get_from_window": {
@@ -242,27 +220,14 @@ func TestUpdateRefreshToken(t *testing.T) {
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
-
-				bodyJson := fmt.Sprintf(`
-				{
-					"access_token": "%s",
-					"token_type": "Bearer",
-					"expires_in": 900,
-					"refresh_token": "%s"
-				}
-				`, accessNew1, refreshNew1)
+				bodyJson := fmt.Sprintf(`{"access_token":"%s","token_type":"Bearer","expires_in":900,"refresh_token":"%s"}`, accessNew1, refreshNew1)
 				resp := httptest.NewRecorder()
 				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
 				resp.Header().Set("Cache-Control", "no-store")
 				resp.Header().Set("Pragma", "no-cache")
 				resp.WriteHeader(http.StatusOK)
 				resp.Write([]byte(bodyJson))
-
-				return &ResponseResult{
-					Code:    resp.Code,
-					Headers: resp.Header(),
-					Body:    resp.Body.Bytes(),
-				}
+				return &ResponseResult{Code: resp.Code, Headers: resp.Header(), Body: resp.Body.Bytes()}
 			},
 			fnCheckMethods: checkMethods,
 		},
@@ -286,22 +251,11 @@ func TestUpdateRefreshToken(t *testing.T) {
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				errBody := middleware.ErrBody{
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
 					Err:     "invalid_grant",
 					Code:    "SESSION_CONTEXT_MISMATCH",
 					Message: "Session context mismatch. Please log in again.",
-				}
-				bodyJson, _ := json.Marshal(errBody)
-				resp := httptest.NewRecorder()
-				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-				resp.WriteHeader(http.StatusBadRequest)
-				resp.Write(bodyJson)
-
-				return &ResponseResult{
-					Code:    resp.Code,
-					Headers: resp.Header(),
-					Body:    resp.Body.Bytes(),
-				}
+				})
 			},
 			fnCheckMethods: checkMethods,
 		},
@@ -334,22 +288,11 @@ func TestUpdateRefreshToken(t *testing.T) {
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				errBody := middleware.ErrBody{
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
 					Err:     "invalid_grant",
 					Code:    "TOKEN_REUSE_DETECTED",
 					Message: "Token reuse detected. Session has been revoked.",
-				}
-				bodyJson, _ := json.Marshal(errBody)
-				resp := httptest.NewRecorder()
-				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-				resp.WriteHeader(http.StatusBadRequest)
-				resp.Write(bodyJson)
-
-				return &ResponseResult{
-					Code:    resp.Code,
-					Headers: resp.Header(),
-					Body:    resp.Body.Bytes(),
-				}
+				})
 			},
 		},
 		"old_version": {
@@ -373,22 +316,11 @@ func TestUpdateRefreshToken(t *testing.T) {
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				errBody := middleware.ErrBody{
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
 					Err:     "invalid_grant",
 					Code:    "TOKEN_REUSE_DETECTED",
 					Message: "Token reuse detected. Session has been revoked.",
-				}
-				bodyJson, _ := json.Marshal(errBody)
-				resp := httptest.NewRecorder()
-				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-				resp.WriteHeader(http.StatusBadRequest)
-				resp.Write(bodyJson)
-
-				return &ResponseResult{
-					Code:    resp.Code,
-					Headers: resp.Header(),
-					Body:    resp.Body.Bytes(),
-				}
+				})
 			},
 		},
 		"refresh_expired": {
@@ -405,22 +337,11 @@ func TestUpdateRefreshToken(t *testing.T) {
 				resetMock(&sessionStore.Mock, t)
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				errBody := middleware.ErrBody{
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
 					Err:     "invalid_grant",
 					Code:    "INVALID_GRANT",
 					Message: "The refresh token has expired. Please re-authenticate.",
-				}
-				bodyJson, _ := json.Marshal(errBody)
-				resp := httptest.NewRecorder()
-				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-				resp.WriteHeader(http.StatusBadRequest)
-				resp.Write(bodyJson)
-
-				return &ResponseResult{
-					Code:    resp.Code,
-					Headers: resp.Header(),
-					Body:    resp.Body.Bytes(),
-				}
+				})
 			},
 			fnCheckMethods: checkMethods,
 		},
@@ -444,22 +365,11 @@ func TestUpdateRefreshToken(t *testing.T) {
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				errBody := middleware.ErrBody{
+				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
 					Err:     "Internal Server Error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
-				}
-				bodyJson, _ := json.Marshal(errBody)
-				resp := httptest.NewRecorder()
-				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-				resp.WriteHeader(http.StatusInternalServerError)
-				resp.Write(bodyJson)
-
-				return &ResponseResult{
-					Code:    resp.Code,
-					Headers: resp.Header(),
-					Body:    resp.Body.Bytes(),
-				}
+				})
 			},
 			fnCheckMethods: checkMethods,
 		},
@@ -483,22 +393,11 @@ func TestUpdateRefreshToken(t *testing.T) {
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				errBody := middleware.ErrBody{
+				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
 					Err:     "Internal Server Error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
-				}
-				bodyJson, _ := json.Marshal(errBody)
-				resp := httptest.NewRecorder()
-				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-				resp.WriteHeader(http.StatusInternalServerError)
-				resp.Write(bodyJson)
-
-				return &ResponseResult{
-					Code:    resp.Code,
-					Headers: resp.Header(),
-					Body:    resp.Body.Bytes(),
-				}
+				})
 			},
 			fnCheckMethods: checkMethods,
 		},
@@ -516,22 +415,11 @@ func TestUpdateRefreshToken(t *testing.T) {
 				resetMock(&sessionStore.Mock, t)
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				errBody := middleware.ErrBody{
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
 					Err:     "invalid_request",
 					Code:    "INVALID_REQUEST",
 					Message: "refresh_token is required",
-				}
-				bodyJson, _ := json.Marshal(errBody)
-				resp := httptest.NewRecorder()
-				resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-				resp.WriteHeader(http.StatusBadRequest)
-				resp.Write(bodyJson)
-
-				return &ResponseResult{
-					Code:    resp.Code,
-					Headers: resp.Header(),
-					Body:    resp.Body.Bytes(),
-				}
+				})
 			},
 			fnCheckMethods: checkMethods,
 		},
@@ -747,41 +635,8 @@ func TestRegistrationUser(t *testing.T) {
 		return out
 	}
 
-	// Готовые ответы-«эталоны».
-	successAnswer := func() *ResponseResult {
-		bodyJson := `
-		{
-			"access_token": "access_token",
-			"token_type": "Bearer",
-			"expires_in": 900,
-			"refresh_token": "refresh_token"
-		}
-		`
-		resp := httptest.NewRecorder()
-		resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-		resp.Header().Set("Cache-Control", "no-store")
-		resp.Header().Set("Pragma", "no-cache")
-		resp.WriteHeader(http.StatusCreated)
-		resp.Write([]byte(bodyJson))
-		return &ResponseResult{
-			Code:    resp.Code,
-			Headers: resp.Header(),
-			Body:    resp.Body.Bytes(),
-		}
-	}
-
-	errAnswer := func(status int, body middleware.ErrBody) *ResponseResult {
-		bodyJson, _ := json.Marshal(body)
-		resp := httptest.NewRecorder()
-		resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-		resp.WriteHeader(status)
-		resp.Write(bodyJson)
-		return &ResponseResult{
-			Code:    resp.Code,
-			Headers: resp.Header(),
-			Body:    resp.Body.Bytes(),
-		}
-	}
+	// Готовые ответы-«эталоны» — используем глобальные хелперы.
+	// successAnswer201 и errAnswer определены в пакете.
 
 	// Хелпер для UNIQUE-violation — клонирует sentinel и выставляет поле.
 	dupErr := func(field string) error {
@@ -845,7 +700,7 @@ func TestRegistrationUser(t *testing.T) {
 					Return(nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer201,
 			fnCheckMethods: checkMethods,
 		},
 		"correct_with_email": {
@@ -872,7 +727,7 @@ func TestRegistrationUser(t *testing.T) {
 					Return(nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer201,
 			fnCheckMethods: checkMethods,
 		},
 		"correct_with_phone": {
@@ -899,7 +754,7 @@ func TestRegistrationUser(t *testing.T) {
 					Return(nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer201,
 			fnCheckMethods: checkMethods,
 		},
 		"correct_with_email_and_phone": {
@@ -927,7 +782,7 @@ func TestRegistrationUser(t *testing.T) {
 					Return(nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer201,
 			fnCheckMethods: checkMethods,
 		},
 		"dublicate_username": {
@@ -1537,42 +1392,7 @@ func TestSignIn(t *testing.T) {
 		}
 	}
 
-	// шаблон успешного ответа
-	successAnswer := func() *ResponseResult {
-		bodyJson := `
-		{
-			"access_token": "access_token",
-			"token_type": "Bearer",
-			"expires_in": 900,
-			"refresh_token": "refresh_token"
-		}
-		`
-		resp := httptest.NewRecorder()
-		resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-		resp.Header().Set("Cache-Control", "no-store")
-		resp.Header().Set("Pragma", "no-cache")
-		resp.WriteHeader(http.StatusOK)
-		resp.Write([]byte(bodyJson))
-		return &ResponseResult{
-			Code:    resp.Code,
-			Headers: resp.Header(),
-			Body:    resp.Body.Bytes(),
-		}
-	}
-
-	// хелпер для ErrorBody-ответа
-	errAnswer := func(status int, body middleware.ErrBody) *ResponseResult {
-		bodyJson, _ := json.Marshal(body)
-		resp := httptest.NewRecorder()
-		resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-		resp.WriteHeader(status)
-		resp.Write(bodyJson)
-		return &ResponseResult{
-			Code:    resp.Code,
-			Headers: resp.Header(),
-			Body:    resp.Body.Bytes(),
-		}
-	}
+	// successAnswer200 и errAnswer — глобальные хелперы.
 
 	table := map[string]TableTest{
 		"correct_by_username": {
@@ -1601,7 +1421,7 @@ func TestSignIn(t *testing.T) {
 					Return(nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer200,
 			fnCheckMethods: checkMethods,
 		},
 		"correct_by_email": {
@@ -1630,7 +1450,7 @@ func TestSignIn(t *testing.T) {
 					Return(nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer200,
 			fnCheckMethods: checkMethods,
 		},
 		"correct_by_phone": {
@@ -1659,7 +1479,7 @@ func TestSignIn(t *testing.T) {
 					Return(nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer200,
 			fnCheckMethods: checkMethods,
 		},
 		"wrong_password": {
@@ -2141,32 +1961,7 @@ func TestAuthentication(t *testing.T) {
 		"CreateGracePeriodic", "GetFromGracePeriodic",
 	}
 
-	// Эталон успешного ответа: 200, без обязательного тела.
-	successAnswer := func() *ResponseResult {
-		resp := httptest.NewRecorder()
-		resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-		resp.Header().Set("Cache-Control", "no-store")
-		resp.Header().Set("Pragma", "no-cache")
-		resp.WriteHeader(http.StatusOK)
-		return &ResponseResult{
-			Code:    resp.Code,
-			Headers: resp.Header(),
-			Body:    resp.Body.Bytes(),
-		}
-	}
-
-	errAnswer := func(status int, body middleware.ErrBody) *ResponseResult {
-		bodyJson, _ := json.Marshal(body)
-		resp := httptest.NewRecorder()
-		resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-		resp.WriteHeader(status)
-		resp.Write(bodyJson)
-		return &ResponseResult{
-			Code:    resp.Code,
-			Headers: resp.Header(),
-			Body:    resp.Body.Bytes(),
-		}
-	}
+	// successAnswer200, errAnswer, invalidTokenAnswer — глобальные хелперы.
 
 	// RFC 6750: invalid_token → 401 + WWW-Authenticate: Bearer ...
 	invalidTokenAnswer := func() *ResponseResult {
@@ -2215,7 +2010,7 @@ func TestAuthentication(t *testing.T) {
 					Return(&session1, nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer200,
 			fnCheckMethods: checkMethods,
 		},
 		"lowercase_bearer_scheme": {
@@ -2239,7 +2034,7 @@ func TestAuthentication(t *testing.T) {
 					Return(&session1, nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer200,
 			fnCheckMethods: checkMethods,
 		},
 		"ip_changed": {
@@ -2266,7 +2061,7 @@ func TestAuthentication(t *testing.T) {
 					Return(nil).
 					Once()
 			},
-			fnReadyAnswer:  successAnswer,
+			fnReadyAnswer:  successAnswer200,
 			fnCheckMethods: checkMethods,
 		},
 		"missing_authorization": {
@@ -2753,7 +2548,7 @@ func TestGetUserData(t *testing.T) {
 		return out
 	}
 
-	// Эталон успешного ответа: 200 + JSON с полями профиля.
+	// Эталон успешного ответа: 200 + JSON с полями профиля (параметризованный).
 	successAnswer := func(u *domain.User) *ResponseResult {
 		resp := httptest.NewRecorder()
 		resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
@@ -2775,37 +2570,7 @@ func TestGetUserData(t *testing.T) {
 		}
 	}
 
-	errAnswer := func(status int, body middleware.ErrBody) *ResponseResult {
-		bodyJson, _ := json.Marshal(body)
-		resp := httptest.NewRecorder()
-		resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
-		resp.WriteHeader(status)
-		resp.Write(bodyJson)
-		return &ResponseResult{
-			Code:    resp.Code,
-			Headers: resp.Header(),
-			Body:    resp.Body.Bytes(),
-		}
-	}
-
-	invalidTokenAnswer := func() *ResponseResult {
-		r := errAnswer(http.StatusUnauthorized, middleware.ErrBody{
-			Err:     "invalid_token",
-			Code:    "INVALID_TOKEN",
-			Message: "The token is invalid or malformed.",
-		})
-		r.Headers.Set("WWW-Authenticate",
-			`Bearer error="invalid_token", error_description="The token is invalid or malformed."`)
-		return r
-	}
-
-	userNotFoundAnswer := func() *ResponseResult {
-		return errAnswer(http.StatusNotFound, middleware.ErrBody{
-			Err:     "not_found",
-			Code:    "USER_NOT_FOUND",
-			Message: "User not found or has been deleted.",
-		})
-	}
+	// errAnswer, invalidTokenAnswer, userNotFoundAnswer — глобальные хелперы.
 
 	type TableTest struct {
 		Comm           string
@@ -3266,8 +3031,935 @@ func TestGetUserData(t *testing.T) {
 	}
 }
 
+// SPEC UpdateUserData
+// Что это и что делает? — handler частичного обновления профиля пользователя.
+// Клиент присылает access JWT в Authorization: Bearer <token>,
+// а также обязательные заголовки Device-Id и User-Agent.
+// В теле запроса — JSON с возможными полями: username, phone, email.
+// Handler:
+//
+//  1. вызывает checkAuth (валидация токена, сессии, IP, Device-Id, User-Agent);
+//
+//  2. проверяет Content-Type == application/json;
+//
+//  3. парсит тело запроса как JSON;
+//
+//  4. для каждого присутствующего поля (username/phone/email):
+//     - username: если null или пустая строка — возвращает 400 VALIDATION_ERROR (имя пользователя
+//     не может быть пустым, это enforced на уровне userStore.Update);
+//     - username: если непустое значение — обновляет через userStore.Update;
+//     - email/phone: если null — очищает поле в БД (SET NULL);
+//     - email/phone: если непустое значение — обновляет через userStore.Update;
+//     - если поле отсутствует в JSON — не трогает его;
+//
+//  5. при успехе — 200 OK с обновлёнными данными {username, email, phone, created_at};
+//
+//  6. если пользователь IsDeleted — 404 NOT_FOUND;
+//
+//  7. если userStore.Update вернул ErrFieldCantBeEmpty (username пуст) — 400 VALIDATION_ERROR;
+//
+//  8. если userStore.Update вернул ErrUserAlreadyExists (дубликат email/phone) — 409 CONFLICT.
+//
+//     Tests:
+//     update_username_only             - только username → 200, Update с username
+//     update_email_only                - только email → 200, Update с email
+//     update_phone_only                - только phone → 200, Update с phone
+//     update_all_fields                - все три поля → 200, Update со всеми полями
+//     update_null_email                - email = null → 200, поле очищено в БД
+//     update_null_phone                - phone = null → 200, поле очищено в БД
+//     update_null_all                  - все поля null → 200, все поля очищены
+//     update_mixed_null_and_values     - часть null, часть со значениями → 200
+//     update_username_null             - username = null → 400 VALIDATION_ERROR (username обязателен)
+//     update_empty_body                - пустое тело {} → 400 BAD_REQUEST, Update не вызывается
+//     user_deleted                     - юзер IsDeleted → 404, Update не вызывается
+//     db_error_on_update               - userStore.Update вернул generic error → 500
+//     duplicate_email                  - email уже занят другим юзером → 409 CONFLICT
+//     duplicate_phone                  - phone уже занят другим юзером → 409 CONFLICT
+//     missing_authorization            - нет Authorization → 401 INVALID_TOKEN
+//     missing_device_id                - нет Device-Id → 400 BAD_REQUEST
+//     invalid_token                    - мусор вместо JWT → 401 INVALID_TOKEN
+//     expired_token                    - exp в прошлом → 401 INVALID_GRANT + WWW-Authenticate
+//     wrong_content_type               - Content-Type не application/json → 415
+//     invalid_json                     - битый JSON → 400 BAD_REQUEST
+func TestUpdateUserData(t *testing.T) {
+	util.LoadEnvFile()
+
+	cm := config.NewConfigManager()
+	cm.Init(context.TODO(), "")
+
+	userStoreBD := domain.NewUserStoreMock(t)
+	userCacheStore := domain.NewUserCacheStoreMock(t)
+	sessionStore := domain.NewSessionStoreMock(t)
+	tu := tokens.NewTokenUtil(cm)
+
+	_ = "1.1.1.1:5432"
+	agent1 := "chrome win 10"
+	deviceId1 := "12345"
+
+	userId1 := uuid.NewV7()
+	familyId1 := uuid.NewV7()
+
+	access1, _, err := tu.GeneratePairToken(userId1, familyId1, deviceId1, agent1)
+	if err != nil {
+		t.Fatalf("failed generate pair token: %v", err)
+	}
+
+	authHandler := handler.NewAuthHandler(
+		cm,
+		domain.GetMockAuditService(),
+		sessionStore,
+		tu,
+		userStoreBD,
+		userCacheStore,
+	)
+
+	// checkMethods сканирует Calls во всех трёх моках.
+	checkMethods := func(methodMustCall, methodNoCall []string) {
+		called := make(map[string]struct{})
+		for _, call := range userStoreBD.Calls {
+			called["bd:"+call.Method] = struct{}{}
+		}
+		for _, call := range userCacheStore.Calls {
+			called["cache:"+call.Method] = struct{}{}
+		}
+		for _, call := range sessionStore.Calls {
+			called[call.Method] = struct{}{}
+		}
+
+		for _, m := range methodMustCall {
+			if _, ok := called[m]; !ok {
+				t.Errorf("method %s was NOT called, but should have been", m)
+			}
+		}
+		for _, m := range methodNoCall {
+			if _, ok := called[m]; ok {
+				t.Errorf("method %s WAS called, but should NOT have been", m)
+			}
+		}
+	}
+
+	// Полный список методов всех сторов (bd, cache, session).
+	allMethods := []string{
+		"bd:GetByID", "bd:Update", "bd:Create", "bd:Delete", "bd:HardDelete",
+		"bd:GetByEmail", "bd:GetByPhone", "bd:GetByOpt",
+		"cache:Get", "cache:Set", "cache:Update", "cache:Del",
+		"GetSessionByFamilyId", "DeleteByRefresh", "UpdateIpAdress",
+	}
+	buildNoCall := func(called ...string) []string {
+		calledSet := make(map[string]struct{}, len(called))
+		for _, c := range called {
+			calledSet[c] = struct{}{}
+		}
+		out := make([]string, 0, len(allMethods))
+		for _, m := range allMethods {
+			if _, ok := calledSet[m]; !ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+
+	// errAnswer — глобальный хелпер.
+
+	type TableTest struct {
+		Comm           string
+		IsError        bool
+		AuthHeader     string
+		DeviceIdReq    string
+		AgentReq       string
+		RawBody        string
+		MethodMustCall []string
+		MethodNoCall   []string
+		fnSetUpMock    func()
+		fnReadyAnswer  func() *ResponseResult
+		fnCheckMethods func(methodMustCall, methodNoCall []string)
+	}
+
+	// expired access token
+	expiredClaims := &tokens.AccessToken{
+		UserId:    userId1,
+		FamilyId:  familyId1,
+		DeviceId:  deviceId1,
+		Agent:     agent1,
+		TokenType: tokens.AccessTokenType,
+		Version:   "jwt-1",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)),
+			Issuer:    tokens.Issuer,
+			IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
+			Subject:   userId1.String(),
+			ID:        uuid.New().String(),
+		},
+	}
+	expiredToken, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, expiredClaims).
+		SignedString(cm.Get().TokenConf.AccessBt)
+
+	table := map[string]TableTest{
+		"update_username_only": {
+			Comm:           "обновление только username — GetSessionByFamilyId → Update → cache:Update",
+			IsError:        false,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": "new_username"}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update", "cache:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update", "cache:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+			},
+			fnReadyAnswer:  successAnswer200,
+			fnCheckMethods: checkMethods,
+		},
+		"update_email_only": {
+			Comm:           "обновление только email — GetSessionByFamilyId → Update → cache:Update",
+			IsError:        false,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"email": "new_email@example.com"}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update", "cache:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update", "cache:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+			},
+			fnReadyAnswer:  successAnswer200,
+			fnCheckMethods: checkMethods,
+		},
+		"update_phone_only": {
+			Comm:           "обновление только phone — GetSessionByFamilyId → Update → cache:Update",
+			IsError:        false,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"phone": "+79991234567"}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update", "cache:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update", "cache:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+			},
+			fnReadyAnswer:  successAnswer200,
+			fnCheckMethods: checkMethods,
+		},
+		"update_all_fields": {
+			Comm:           "обновление всех полей (username+email+phone) — GetSessionByFamilyId → Update → cache:Update",
+			IsError:        false,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": "new_username", "email": "new_email@example.com", "phone": "+79991234567"}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update", "cache:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update", "cache:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+			},
+			fnReadyAnswer:  successAnswer200,
+			fnCheckMethods: checkMethods,
+		},
+		"update_null_email": {
+			Comm:           "email = null → 200, поле очищено в БД — GetSessionByFamilyId → Update → cache:Update",
+			IsError:        false,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"email": null}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update", "cache:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update", "cache:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+			},
+			fnReadyAnswer:  successAnswer200,
+			fnCheckMethods: checkMethods,
+		},
+		"update_null_phone": {
+			Comm:           "phone = null → 200, поле очищено в БД — GetSessionByFamilyId → Update → cache:Update",
+			IsError:        false,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"phone": null}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update", "cache:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update", "cache:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+			},
+			fnReadyAnswer:  successAnswer200,
+			fnCheckMethods: checkMethods,
+		},
+		"update_null_all": {
+			Comm:           "все поля null → 200, все поля очищены — GetSessionByFamilyId → Update → cache:Update",
+			IsError:        false,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": null, "email": null, "phone": null}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update", "cache:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update", "cache:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+			},
+			fnReadyAnswer:  successAnswer200,
+			fnCheckMethods: checkMethods,
+		},
+		"update_mixed_null_and_values": {
+			Comm:           "часть null, часть со значениями → 200 — GetSessionByFamilyId → Update → cache:Update",
+			IsError:        false,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": "new_username", "email": null, "phone": "+79991234567"}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update", "cache:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update", "cache:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
+					Return(nil).
+					Once()
+			},
+			fnReadyAnswer:  successAnswer200,
+			fnCheckMethods: checkMethods,
+		},
+		"duplicate_email": {
+			Comm:           "email уже занят другим юзером → 409 CONFLICT — GetSessionByFamilyId → Update (ошибка)",
+			IsError:        true,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"email": "someone_else@example.com"}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				err := postgres.ErrUserAlreadyExists.Clone()
+				err.Fields = append(err.Fields, "email")
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(err).
+					Once()
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusConflict, middleware.ErrBody{
+					Err:     "conflict",
+					Code:    "CONFLICT",
+					Message: "The email is already in use by another user.",
+				})
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"duplicate_phone": {
+			Comm:           "phone уже занят другим юзером → 409 CONFLICT — GetSessionByFamilyId → Update (ошибка)",
+			IsError:        true,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"phone": "+79999999999"}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				err := postgres.ErrUserAlreadyExists.Clone()
+				err.Fields = append(err.Fields, "phone")
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(err).
+					Once()
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusConflict, middleware.ErrBody{
+					Err:     "conflict",
+					Code:    "CONFLICT",
+					Message: "The phone is already in use by another user.",
+				})
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"missing_authorization": {
+			Comm:           "нет Authorization → 401 INVALID_TOKEN — checkAuth падает до вызова sessionStore",
+			IsError:        true,
+			AuthHeader:     "",
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": "newname"}`,
+			MethodMustCall: []string{},
+			MethodNoCall:   buildNoCall(),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				r := errAnswer(http.StatusUnauthorized, middleware.ErrBody{
+					Err:     "invalid_token",
+					Code:    "INVALID_TOKEN",
+					Message: "The token is invalid or malformed.",
+				})
+				r.Headers.Set("WWW-Authenticate",
+					`Bearer error="invalid_token", error_description="The token is invalid or malformed."`)
+				return r
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"missing_device_id": {
+			Comm:           "нет Device-Id → 400 BAD_REQUEST — validateCheck возвращает ошибку",
+			IsError:        true,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    "",
+			AgentReq:       agent1,
+			RawBody:        `{"username": "newname"}`,
+			MethodMustCall: []string{},
+			MethodNoCall:   buildNoCall(),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
+					Err:     "bad request",
+					Code:    "BAD_REQUEST",
+					Message: "The request is missing important fields.",
+				})
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"update_username_null": {
+			Comm:           "username = null → 400 VALIDATION_ERROR (username обязателен)",
+			IsError:        true,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": null}`,
+			MethodMustCall: []string{},
+			MethodNoCall:   buildNoCall(),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
+					Err:     "invalid_request",
+					Code:    "VALIDATION_ERROR",
+					Message: "Username cannot be null or empty.",
+				})
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"update_empty_body": {
+			Comm:           "пустое тело {} → 400 BAD_REQUEST, Update не вызывается",
+			IsError:        true,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			MethodMustCall: []string{},
+			MethodNoCall:   buildNoCall(),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
+					Err:     "bad request",
+					Code:    "BAD_REQUEST",
+					Message: "The request body contains invalid or missing fields.",
+				})
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"user_deleted": {
+			Comm:           "юзер IsDeleted → 404, Update не вызывается",
+			IsError:        true,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": "newname"}`,
+			MethodMustCall: []string{},
+			MethodNoCall:   buildNoCall(),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusNotFound, middleware.ErrBody{
+					Err:     "not_found",
+					Code:    "USER_NOT_FOUND",
+					Message: "User not found or has been deleted.",
+				})
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"db_error_on_update": {
+			Comm:           "userStore.Update вернул generic error → 500",
+			IsError:        true,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": "new_username"}`,
+			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update"),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+					Return(errors.New("connection reset")).
+					Once()
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
+					Err:     "Internal Server Error",
+					Code:    "AUTH_SERVICE_ERROR",
+					Message: "Authentication service is temporarily unavailable. Please try again later.",
+				})
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"invalid_token": {
+			Comm:           "мусор вместо JWT → 401 INVALID_TOKEN",
+			IsError:        true,
+			AuthHeader:     "Bearer not-a-jwt-token",
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": "newname"}`,
+			MethodMustCall: []string{},
+			MethodNoCall:   buildNoCall(),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				r := errAnswer(http.StatusUnauthorized, middleware.ErrBody{
+					Err:     "invalid_token",
+					Code:    "INVALID_TOKEN",
+					Message: "The token is invalid or malformed.",
+				})
+				r.Headers.Set("WWW-Authenticate",
+					`Bearer error="invalid_token", error_description="The token is invalid or malformed."`)
+				return r
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"expired_token": {
+			Comm:           "exp в прошлом → 401 INVALID_GRANT + WWW-Authenticate",
+			IsError:        true,
+			AuthHeader:     "Bearer " + expiredToken,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": "newname"}`,
+			MethodMustCall: []string{},
+			MethodNoCall:   buildNoCall(),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				r := errAnswer(http.StatusUnauthorized, middleware.ErrBody{
+					Err:     "invalid_grant",
+					Code:    "INVALID_GRANT",
+					Message: "The access token has expired. Please re-authenticate.",
+				})
+				r.Headers.Set("WWW-Authenticate",
+					`Bearer error="invalid_token", error_description="The access token expired"`)
+				return r
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"wrong_content_type": {
+			Comm:           "Content-Type не application/json → 415",
+			IsError:        true,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{"username": "newname"}`,
+			MethodMustCall: []string{},
+			MethodNoCall:   buildNoCall(),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusUnsupportedMediaType, middleware.ErrBody{
+					Err:     "invalid_body",
+					Code:    "INVALID_BODY",
+					Message: "Unsupported Media Type",
+				})
+			},
+			fnCheckMethods: checkMethods,
+		},
+		"invalid_json": {
+			Comm:           "битый JSON → 400 BAD_REQUEST",
+			IsError:        true,
+			AuthHeader:     "Bearer " + access1,
+			DeviceIdReq:    deviceId1,
+			AgentReq:       agent1,
+			RawBody:        `{not valid json}`,
+			MethodMustCall: []string{},
+			MethodNoCall:   buildNoCall(),
+			fnSetUpMock: func() {
+				resetMock(&userStoreBD.Mock, t)
+				resetMock(&userCacheStore.Mock, t)
+				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
+			},
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
+					Err:     "bad request",
+					Code:    "BAD_REQUEST",
+					Message: "The request body contains invalid or missing fields.",
+				})
+			},
+			fnCheckMethods: checkMethods,
+		},
+	}
+
+	for name, val := range table {
+		t.Run(name, func(t *testing.T) {
+			val.fnSetUpMock()
+
+			body := val.RawBody
+			if body == "" {
+				body = "{}"
+			}
+
+			req := httptest.NewRequest(http.MethodPatch, "/user/me", bytes.NewBufferString(body))
+			if val.AuthHeader != "" {
+				req.Header.Set("Authorization", val.AuthHeader)
+			}
+			if val.DeviceIdReq != "" {
+				req.Header.Set("Device-Id", val.DeviceIdReq)
+			}
+			if val.AgentReq != "" {
+				req.Header.Set("User-Agent", val.AgentReq)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = "1.1.1.1:5432"
+
+			rec := httptest.NewRecorder()
+			authHandler.UpdateUserData(rec, req)
+
+			mustResp := val.fnReadyAnswer()
+
+			if mustResp.Code != rec.Code {
+				t.Errorf("fail http status code dont equal want %v have %v", mustResp.Code, rec.Code)
+			}
+
+			if len(mustResp.Body) > 0 {
+				if val.IsError {
+					var mustErrBody middleware.ErrBody
+					if err := json.Unmarshal(mustResp.Body, &mustErrBody); err != nil {
+						t.Fatalf("unmarshal json must %v", err)
+					}
+
+					var outErrBody middleware.ErrBody
+					if err := json.Unmarshal(rec.Body.Bytes(), &outErrBody); err != nil {
+						t.Fatalf("unmarshal json out %v", err)
+					}
+
+					if mustErrBody.Err != outErrBody.Err ||
+						mustErrBody.Code != outErrBody.Code ||
+						mustErrBody.Message != outErrBody.Message {
+						t.Errorf("fail http body dont equal want %+v have %+v", mustErrBody, outErrBody)
+					}
+				}
+			}
+
+			errHeaderAuth := mustResp.Headers.Get("WWW-Authenticate")
+			if errHeaderAuth != "" {
+				respHead := rec.Header().Get("WWW-Authenticate")
+				if errHeaderAuth != respHead {
+					t.Errorf("fail http auth header dont equal want %v have %v", errHeaderAuth, respHead)
+				}
+			}
+
+			val.fnCheckMethods(val.MethodMustCall, val.MethodNoCall)
+		})
+	}
+}
+
 func resetMock(m *mock.Mock, t *testing.T) {
 	m.ExpectedCalls = nil
 	m.Calls = nil
 	m.Test(t) // перепривязать к TestingT текущего подтеста
+}
+
+// --- Хелперы для построения эталонных ответов ---
+
+// successAnswer200 — 200 OK с JSON-заголовками и Cache-Control.
+func successAnswer200() *ResponseResult {
+	resp := httptest.NewRecorder()
+	resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	resp.Header().Set("Cache-Control", "no-store")
+	resp.Header().Set("Pragma", "no-cache")
+	resp.WriteHeader(http.StatusOK)
+	return &ResponseResult{
+		Code:    resp.Code,
+		Headers: resp.Header(),
+		Body:    resp.Body.Bytes(),
+	}
+}
+
+// successAnswer201 — 201 Created с JSON-заголовками, Cache-Control и телом токенов.
+func successAnswer201() *ResponseResult {
+	bodyJson := `{
+		"access_token": "access_token",
+		"token_type": "Bearer",
+		"expires_in": 900,
+		"refresh_token": "refresh_token"
+	}`
+	resp := httptest.NewRecorder()
+	resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	resp.Header().Set("Cache-Control", "no-store")
+	resp.Header().Set("Pragma", "no-cache")
+	resp.WriteHeader(http.StatusCreated)
+	resp.Write([]byte(bodyJson))
+	return &ResponseResult{
+		Code:    resp.Code,
+		Headers: resp.Header(),
+		Body:    resp.Body.Bytes(),
+	}
+}
+
+// errAnswer — ответ с ошибкой: заданный статус + ErrBody JSON.
+func errAnswer(status int, body middleware.ErrBody) *ResponseResult {
+	bodyJson, _ := json.Marshal(body)
+	resp := httptest.NewRecorder()
+	resp.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	resp.WriteHeader(status)
+	resp.Write(bodyJson)
+	return &ResponseResult{
+		Code:    resp.Code,
+		Headers: resp.Header(),
+		Body:    resp.Body.Bytes(),
+	}
+}
+
+// invalidTokenAnswer — 401 + WWW-Authenticate (RFC 6750).
+func invalidTokenAnswer() *ResponseResult {
+	r := errAnswer(http.StatusUnauthorized, middleware.ErrBody{
+		Err:     "invalid_token",
+		Code:    "INVALID_TOKEN",
+		Message: "The token is invalid or malformed.",
+	})
+	r.Headers.Set("WWW-Authenticate",
+		`Bearer error="invalid_token", error_description="The token is invalid or malformed."`)
+	return r
+}
+
+// userNotFoundAnswer — 404 NOT_FOUND.
+func userNotFoundAnswer() *ResponseResult {
+	return errAnswer(http.StatusNotFound, middleware.ErrBody{
+		Err:     "not_found",
+		Code:    "USER_NOT_FOUND",
+		Message: "User not found or has been deleted.",
+	})
 }

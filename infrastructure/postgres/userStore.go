@@ -131,7 +131,7 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.U
 
 	pool := us.db.GetPool()
 
-	_, err = pool.Exec(ctx, query, args...)
+	res, err := pool.Exec(ctx, query, args...)
 	if err != nil {
 		errUnicViolation := DbErrorFromUnicViolation(err)
 		if errUnicViolation != nil {
@@ -139,6 +139,11 @@ func (us *UserStore) Update(ctx context.Context, id uuid.UUID, userOpt *domain.U
 		} else {
 			return err
 		}
+	}
+
+	rows := res.RowsAffected()
+	if rows == 0 {
+		return ErrUserDontExist
 	}
 
 	return nil

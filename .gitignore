@@ -2,3 +2,6 @@
 logs/
 .env
 .prettierignore
+merge_go/
+merge_md/
+merged.go.md

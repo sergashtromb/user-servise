@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"user_service/config"
@@ -16,6 +17,7 @@ import (
 	"user_service/infrastructure/reporedis/custerr"
 	"user_service/infrastructure/tokens"
 	"user_service/initial/middleware"
+	"user_service/pkg/repoerrors"
 	"uuid"
 
 	"github.com/vfaronov/httpheader"
@@ -665,6 +667,8 @@ func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
 	var getFromDb = false
 	var user *domain.User
 
+	key := fmt.Sprintf("%s", ex.userId)
+
 	userFromCache, err := ah.usCh.Get(ex.ctx, ex.userId)
 	if err != nil {
 		strerr := err.Error()
@@ -676,7 +680,10 @@ func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
 		user = userFromCache
 	} else {
 
-		userFromDb, err := ah.usBd.GetByID(ex.ctx, ex.userId)
+		userFromDb, err, _ := ah.sgr.Do(key, func() (any, error) {
+			userFromDb, err := ah.usBd.GetByID(ex.ctx, ex.userId)
+			return userFromDb, err
+		})
 		if postgres.ErrUserDontExist.Is(err) {
 
 			sendErr(w, NotFoundBody, ex.traceId, "", ex.ctx, http.StatusNotFound, ah.audit)
@@ -691,7 +698,7 @@ func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if userFromDb != nil {
-			user = userFromDb
+			user = userFromDb.(*domain.User)
 			getFromDb = true
 		} else {
 			sendErr(w, NotFoundBody, ex.traceId, "", ex.ctx, http.StatusNotFound, ah.audit)
@@ -735,6 +742,100 @@ func (ah *AuthHandler) GetUserData(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write(jsonData)
+}
+
+func (ah *AuthHandler) UpdateUserData(w http.ResponseWriter, r *http.Request) {
+
+	ec, toReturn := ah.checkAuth(w, r)
+	if toReturn {
+		return
+	}
+
+	jsonBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		sendBadrequest(w, ec.traceId, "The request body contains invalid or missing fields.", ec.ctx, ah.audit)
+		return
+	}
+
+	var userOpt domain.UserOpt
+	err = json.Unmarshal(jsonBody, &userOpt)
+	if err != nil {
+		sendBadrequest(w, ec.traceId, "The request body contains invalid or missing fields.", ec.ctx, ah.audit)
+		return
+	}
+
+	if !userOpt.UserName.Define && !userOpt.Email.Define && !userOpt.Phone.Define && !userOpt.IsDeleted.Define {
+		errBody := middleware.ErrBody{
+			Err:     "bad request",
+			Code:    "BAD_REQUEST",
+			Message: "The request body contains invalid or missing fields.",
+		}
+		sendErr(w, errBody, ec.traceId, "", ec.ctx, http.StatusBadRequest, ah.audit)
+		return
+	}
+
+	if userOpt.UserName.Define && !userOpt.UserName.Valid {
+		errBody := middleware.ErrBody{
+			Err:     "invalid_request",
+			Code:    "VALIDATION_ERROR",
+			Message: "Username cannot be null or empty.",
+		}
+		sendErr(w, errBody, ec.traceId, "", ec.ctx, http.StatusBadRequest, ah.audit)
+		return
+	}
+
+	hexid := hex.EncodeToString(ec.userId[:])
+	key := fmt.Sprintf("%s%s%s%s%v", hexid, userOpt.UserName.Value, userOpt.Email.Value,
+		userOpt.Phone.Value, userOpt.IsDeleted.Value)
+
+	_, err, _ = ah.sgr.Do(key, func() (any, error) {
+		err := ah.usBd.Update(ec.ctx, ec.userId, &userOpt)
+		return nil, err
+	})
+
+	if postgres.ErrUserAlreadyExists.Is(err) {
+		errBody := middleware.ErrBody{
+			Err:  "conflict",
+			Code: "CONFLICT",
+		}
+
+		errWitnFields := err.(*repoerrors.RepoError)
+		if slices.Contains(errWitnFields.Fields, "email") {
+			errBody.Message = "The email is already in use by another user."
+		} else if slices.Contains(errWitnFields.Fields, "phone") {
+			errBody.Message = "The phone is already in use by another user."
+		} else if slices.Contains(errWitnFields.Fields, "username") {
+			errBody.Message = "The username is already in use by another user."
+		} else {
+			strerr := "err dont have fields"
+			event := domain.NewFailedEvent(domain.EventUpdateUser, domain.EventPlaceHandler, &strerr,
+				hexid, ec.traceId)
+			ah.audit.Log(ec.ctx, event)
+			sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+			return
+		}
+
+		sendErr(w, errBody, ec.traceId, "", ec.ctx, http.StatusConflict, ah.audit)
+		return
+
+	} else if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventUpdateUser, domain.EventPlaceHandler, &strerr,
+			hexid, ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+		sendIternalServerError(w, ec.traceId, ec.ctx, ah.audit)
+		return
+	}
+
+	err = ah.usCh.Update(ec.ctx, ec.userId, &userOpt)
+	if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventUpdateUser, domain.EventPlaceHandler, &strerr,
+			hexid, ec.traceId)
+		ah.audit.Log(ec.ctx, event)
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func (ah *AuthHandler) checkAuth(w http.ResponseWriter, r *http.Request) (*executionContext, bool) {
