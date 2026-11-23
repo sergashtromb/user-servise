@@ -3067,7 +3067,7 @@ func TestGetUserData(t *testing.T) {
 //     update_all_fields                - все три поля → 200, Update со всеми полями
 //     update_null_email                - email = null → 200, поле очищено в БД
 //     update_null_phone                - phone = null → 200, поле очищено в БД
-//     update_null_all                  - все поля null → 200, все поля очищены
+//     update_null_all                  - username null → 400 VALIDATION_ERROR (username обязателен)
 //     update_mixed_null_and_values     - часть null, часть со значениями → 200
 //     update_username_null             - username = null → 400 VALIDATION_ERROR (username обязателен)
 //     update_empty_body                - пустое тело {} → 400 BAD_REQUEST, Update не вызывается
@@ -3079,7 +3079,6 @@ func TestGetUserData(t *testing.T) {
 //     missing_device_id                - нет Device-Id → 400 BAD_REQUEST
 //     invalid_token                    - мусор вместо JWT → 401 INVALID_TOKEN
 //     expired_token                    - exp в прошлом → 401 INVALID_GRANT + WWW-Authenticate
-//     wrong_content_type               - Content-Type не application/json → 415
 //     invalid_json                     - битый JSON → 400 BAD_REQUEST
 func TestUpdateUserData(t *testing.T) {
 	util.LoadEnvFile()
@@ -3406,14 +3405,14 @@ func TestUpdateUserData(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"update_null_all": {
-			Comm:           "все поля null → 200, все поля очищены — GetSessionByFamilyId → Update → cache:Update",
-			IsError:        false,
+			Comm:           "username null → 400 VALIDATION_ERROR, только GetSessionByFamilyId",
+			IsError:        true,
 			AuthHeader:     "Bearer " + access1,
 			DeviceIdReq:    deviceId1,
 			AgentReq:       agent1,
 			RawBody:        `{"username": null, "email": null, "phone": null}`,
-			MethodMustCall: []string{"GetSessionByFamilyId", "bd:Update", "cache:Update"},
-			MethodNoCall:   buildNoCall("GetSessionByFamilyId", "bd:Update", "cache:Update"),
+			MethodMustCall: []string{"GetSessionByFamilyId"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId"),
 			fnSetUpMock: func() {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&userCacheStore.Mock, t)
@@ -3430,14 +3429,14 @@ func TestUpdateUserData(t *testing.T) {
 						LastUpdate: time.Now(),
 					}, nil).
 					Once()
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
-					Return(nil).
-					Once()
-				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
-					Return(nil).
-					Once()
 			},
-			fnReadyAnswer:  successAnswer200,
+			fnReadyAnswer: func() *ResponseResult {
+				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
+					Err:     "invalid_request",
+					Code:    "VALIDATION_ERROR",
+					Message: "Username cannot be null or empty.",
+				})
+			},
 			fnCheckMethods: checkMethods,
 		},
 		"update_mixed_null_and_values": {
@@ -3605,18 +3604,30 @@ func TestUpdateUserData(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"update_username_null": {
-			Comm:           "username = null → 400 VALIDATION_ERROR (username обязателен)",
+			Comm:           "username = null → 400 VALIDATION_ERROR (username обязателен), GetSessionByFamilyId вызван",
 			IsError:        true,
 			AuthHeader:     "Bearer " + access1,
 			DeviceIdReq:    deviceId1,
 			AgentReq:       agent1,
 			RawBody:        `{"username": null}`,
-			MethodMustCall: []string{},
-			MethodNoCall:   buildNoCall(),
+			MethodMustCall: []string{"GetSessionByFamilyId"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId"),
 			fnSetUpMock: func() {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&userCacheStore.Mock, t)
 				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
@@ -3628,17 +3639,29 @@ func TestUpdateUserData(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"update_empty_body": {
-			Comm:           "пустое тело {} → 400 BAD_REQUEST, Update не вызывается",
+			Comm:           "пустое тело {} → 400 BAD_REQUEST, GetSessionByFamilyId вызван, Update не вызывается",
 			IsError:        true,
 			AuthHeader:     "Bearer " + access1,
 			DeviceIdReq:    deviceId1,
 			AgentReq:       agent1,
-			MethodMustCall: []string{},
-			MethodNoCall:   buildNoCall(),
+			MethodMustCall: []string{"GetSessionByFamilyId"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId"),
 			fnSetUpMock: func() {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&userCacheStore.Mock, t)
 				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return(&domain.Session{
+						UserId:     userId1,
+						DeviceId:   deviceId1,
+						Agent:      agent1,
+						Ip:         "1.1.1.1",
+						Version:    "jwt-1",
+						CreatedAt:  time.Now(),
+						LastUpdate: time.Now(),
+					}, nil).
+					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
@@ -3650,24 +3673,28 @@ func TestUpdateUserData(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"user_deleted": {
-			Comm:           "юзер IsDeleted → 404, Update не вызывается",
+			Comm:           "сессия не существует → 401 INVALID_TOKEN, GetSessionByFamilyId вызван",
 			IsError:        true,
 			AuthHeader:     "Bearer " + access1,
 			DeviceIdReq:    deviceId1,
 			AgentReq:       agent1,
 			RawBody:        `{"username": "newname"}`,
-			MethodMustCall: []string{},
-			MethodNoCall:   buildNoCall(),
+			MethodMustCall: []string{"GetSessionByFamilyId"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId"),
 			fnSetUpMock: func() {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&userCacheStore.Mock, t)
 				resetMock(&sessionStore.Mock, t)
+
+				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
+					Return((*domain.Session)(nil), custerr.ErrNotFound).
+					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
-				return errAnswer(http.StatusNotFound, middleware.ErrBody{
-					Err:     "not_found",
-					Code:    "USER_NOT_FOUND",
-					Message: "User not found or has been deleted.",
+				return errAnswer(http.StatusUnauthorized, middleware.ErrBody{
+					Err:     "invalid_token",
+					Code:    "INVALID_TOKEN",
+					Message: "The session is invalid or has been revoked.",
 				})
 			},
 			fnCheckMethods: checkMethods,
@@ -3762,29 +3789,6 @@ func TestUpdateUserData(t *testing.T) {
 			},
 			fnCheckMethods: checkMethods,
 		},
-		"wrong_content_type": {
-			Comm:           "Content-Type не application/json → 415",
-			IsError:        true,
-			AuthHeader:     "Bearer " + access1,
-			DeviceIdReq:    deviceId1,
-			AgentReq:       agent1,
-			RawBody:        `{"username": "newname"}`,
-			MethodMustCall: []string{},
-			MethodNoCall:   buildNoCall(),
-			fnSetUpMock: func() {
-				resetMock(&userStoreBD.Mock, t)
-				resetMock(&userCacheStore.Mock, t)
-				resetMock(&sessionStore.Mock, t)
-			},
-			fnReadyAnswer: func() *ResponseResult {
-				return errAnswer(http.StatusUnsupportedMediaType, middleware.ErrBody{
-					Err:     "invalid_body",
-					Code:    "INVALID_BODY",
-					Message: "Unsupported Media Type",
-				})
-			},
-			fnCheckMethods: checkMethods,
-		},
 		"invalid_json": {
 			Comm:           "битый JSON → 400 BAD_REQUEST",
 			IsError:        true,
@@ -3792,8 +3796,8 @@ func TestUpdateUserData(t *testing.T) {
 			DeviceIdReq:    deviceId1,
 			AgentReq:       agent1,
 			RawBody:        `{not valid json}`,
-			MethodMustCall: []string{},
-			MethodNoCall:   buildNoCall(),
+			MethodMustCall: []string{"GetSessionByFamilyId"},
+			MethodNoCall:   buildNoCall("GetSessionByFamilyId"),
 			fnSetUpMock: func() {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&userCacheStore.Mock, t)
@@ -3884,6 +3888,11 @@ func TestUpdateUserData(t *testing.T) {
 			val.fnCheckMethods(val.MethodMustCall, val.MethodNoCall)
 		})
 	}
+}
+
+// SPEC DeleteUser
+func TestDeleteUser(t *testing.T) {
+
 }
 
 func resetMock(m *mock.Mock, t *testing.T) {

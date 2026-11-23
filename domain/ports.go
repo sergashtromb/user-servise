@@ -20,7 +20,7 @@ type UserCacheStore interface {
 	Set(ctx context.Context, user *User) error
 	Get(ctx context.Context, id uuid.UUID) (*User, error)
 	Update(ctx context.Context, id uuid.UUID, userOpt *UserOpt) error
-	Del(ctx context.Context, key string) error
+	Del(ctx context.Context, id uuid.UUID) error
 }
 
 type SessionStore interface {

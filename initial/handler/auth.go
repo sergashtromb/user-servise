@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -838,6 +839,45 @@ func (ah *AuthHandler) UpdateUserData(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (ah *AuthHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
+
+	ex, toReturn := ah.checkAuth(w, r)
+	if toReturn {
+		return
+	}
+
+	err := ah.usCh.Del(ex.ctx, ex.userId)
+	if err != nil {
+		sendIternalServerError(w, ex.traceId, ex.ctx, ah.audit)
+		return
+	}
+
+	key := hex.EncodeToString(ex.userId[:])
+	_, err, _ = ah.sgr.Do(key, func() (any, error) {
+		err := ah.usBd.Delete(ex.ctx, ex.userId)
+		return nil, err
+	})
+
+	if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventDeletedUser, domain.EventPlaceHandler,
+			&strerr, key, ex.traceId)
+		ah.audit.Log(ex.ctx, event)
+		sendIternalServerError(w, ex.traceId, ex.ctx, ah.audit)
+		return
+	}
+
+	err = ah.ss.DeleteAll(ex.ctx, ex.userId)
+	if err != nil {
+		strerr := err.Error()
+		event := domain.NewFailedEvent(domain.EventDeleteSessionFailed, domain.EventPlaceHandler,
+			&strerr, key, ex.traceId)
+		ah.audit.Log(ex.ctx, event)
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func (ah *AuthHandler) checkAuth(w http.ResponseWriter, r *http.Request) (*executionContext, bool) {
 	ec, toReturn := ah.validateCheck(w, r, domain.EventAutheticationFailed, false)
 	if toReturn {
@@ -1273,4 +1313,8 @@ func getBearerData(header string) (string, bool) {
 	}
 
 	return "", false
+}
+
+func isEmptyJSONObject(data []byte) bool {
+	return bytes.Equal(bytes.TrimSpace(data), []byte("{}"))
 }

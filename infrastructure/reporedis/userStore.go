@@ -101,10 +101,30 @@ func (us *UserStore) Set(ctx context.Context, user *dm.User) error {
 	return err
 }
 
-func (us *UserStore) Del(ctx context.Context, key string) error {
+func (us *UserStore) Del(ctx context.Context, id uuid.UUID) error {
+
+	traceId, ok := ctx.Value(dm.TraceKey).(string)
+	if !ok {
+		traceId = ""
+	}
+
+	hexid := hex.EncodeToString(id[:])
+	key := fmt.Sprintf("%s%s", UserKey, hexid)
+
 	err := us.repo.Do(ctx, func(ctx context.Context, client *redis.Client) error {
+
 		cmd := client.Del(ctx, key)
-		return cmd.Err()
+
+		err := cmd.Err()
+		if err != nil {
+			strerr := err.Error()
+			event := dm.NewFailedEvent(dm.EventDeletedUser, dm.EventPlaceRedis, &strerr,
+				hexid, traceId)
+			us.audit.Log(ctx, event)
+			return err
+		}
+
+		return nil
 	})
 	return err
 }

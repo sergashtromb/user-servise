@@ -45,7 +45,7 @@ func (m *UserCacheStoreMock) Update(ctx context.Context, id uuid.UUID, userOpt *
 	return args.Error(0)
 }
 
-func (m *UserCacheStoreMock) Del(ctx context.Context, key string) error {
-	args := m.Called(ctx, key)
+func (m *UserCacheStoreMock) Del(ctx context.Context, id uuid.UUID) error {
+	args := m.Called(ctx, id)
 	return args.Error(0)
 }
