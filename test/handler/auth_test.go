@@ -18,6 +18,7 @@ import (
 	"user_service/infrastructure/tokens"
 	"user_service/initial/handler"
 	"user_service/initial/middleware"
+	"user_service/service"
 	"user_service/util"
 	"uuid"
 
@@ -94,7 +95,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 	expiredRefreshToken, _ := expiredRefresh.SignedString(cm.Get().TokenConf.RefreshBt)
 	userStoreBD := domain.NewUserStoreMock(t)
 	userCacheStore := domain.NewUserCacheStoreMock(t)
-	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD, userCacheStore)
+	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD, userCacheStore, service.NewUserService(userCacheStore, userStoreBD, sessionStore, domain.GetMockAuditService(), tu, cm))
 
 	session1 := domain.Session{
 		UserId:     userId1,
@@ -366,7 +367,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
-					Err:     "Internal Server Error",
+					Err:     "internal_server_error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
 				})
@@ -394,7 +395,7 @@ func TestUpdateRefreshToken(t *testing.T) {
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
-					Err:     "Internal Server Error",
+					Err:     "internal_server_error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
 				})
@@ -460,7 +461,6 @@ func TestUpdateRefreshToken(t *testing.T) {
 	}
 
 	for name, val := range table {
-
 		t.Run(name, func(t *testing.T) {
 
 			val.fnSetUpMock()
@@ -474,12 +474,20 @@ func TestUpdateRefreshToken(t *testing.T) {
 			testReq := httptest.NewRequest("POST", "/refresh", bytes.NewBufferString(bodyStr))
 			testReq.RemoteAddr = val.IpReq
 			testReq.Header.Set("User-Agent", val.AgentReq)
-			testReq.Header.Set("Device-Id", val.DeviceIdReq)
+			testReq.AddCookie(&http.Cookie{Name: "DeviceId", Value: val.DeviceIdReq})
 			testReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 			rec := httptest.NewRecorder()
 
-			authHandler.UpdateRefreshToken(rec, testReq)
+			wrappedHandler := wrapHandlerWithImportantParamsMiddleware(
+				domain.GetMockAuditService(),
+				sessionStore,
+				userStoreBD,
+				cm,
+				tu,
+				http.HandlerFunc(authHandler.UpdateRefreshToken),
+			)
+			wrappedHandler.ServeHTTP(rec, testReq)
 
 			mustResp := val.fnReadyAnswer()
 
@@ -563,9 +571,8 @@ func TestUpdateRefreshToken(t *testing.T) {
 //		whitespace_password             - password из одних пробелов → 400 VALIDATION_ERROR
 //		db_error                        - userStoreBD.Create вернул generic error → 500
 //		session_registration_fail       - sessionStore.Registration упал → 500
-//		missing_device_id               - нет Device-Id заголовка → 400 BAD_REQUEST
+//		missing_device_id               - нет cookie DeviceId → 400 BAD_REQUEST
 //		missing_user_agent              - нет User-Agent заголовка → 400 BAD_REQUEST
-//		wrong_content_type              - Content-Type не application/json → 415
 //		invalid_json                    - битый JSON в теле → 400
 //		bad_remote_addr                 - невалидный RemoteAddr → 400
 //		body_too_large                  - тело > 64KiB → 400
@@ -588,7 +595,9 @@ func TestRegistrationUser(t *testing.T) {
 	email1 := "user@example.com"
 	phone1 := "+79991234567"
 
-	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD, userCacheStore)
+	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD,
+		userCacheStore,
+		service.NewUserService(userCacheStore, userStoreBD, sessionStore, domain.GetMockAuditService(), tu, cm))
 
 	// checkMethods сканирует вызовы обоих моков.
 	checkMethods := func(methodMustCall, methodNoCall []string) {
@@ -693,7 +702,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("Create", context.Background(), mock.Anything).
+				userStoreBD.On("Create", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(uuid.NewV7(), nil).
 					Once()
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -720,7 +729,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("Create", context.Background(), mock.Anything).
+				userStoreBD.On("Create", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(uuid.NewV7(), nil).
 					Once()
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -747,7 +756,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("Create", context.Background(), mock.Anything).
+				userStoreBD.On("Create", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(uuid.NewV7(), nil).
 					Once()
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -775,7 +784,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("Create", context.Background(), mock.Anything).
+				userStoreBD.On("Create", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(uuid.NewV7(), nil).
 					Once()
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -801,7 +810,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("Create", context.Background(), mock.Anything).
+				userStoreBD.On("Create", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(uuid.Nil(), dupErr("username")).
 					Once()
 			},
@@ -831,7 +840,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("Create", context.Background(), mock.Anything).
+				userStoreBD.On("Create", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(uuid.Nil(), dupErr("email")).
 					Once()
 			},
@@ -861,7 +870,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("Create", context.Background(), mock.Anything).
+				userStoreBD.On("Create", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(uuid.Nil(), dupErr("phone")).
 					Once()
 			},
@@ -990,13 +999,13 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("Create", context.Background(), mock.Anything).
+				userStoreBD.On("Create", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(uuid.Nil(), errors.New("connection reset by peer")).
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
-					Err:     "Internal Server Error",
+					Err:     "internal_server_error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
 				})
@@ -1019,7 +1028,7 @@ func TestRegistrationUser(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("Create", context.Background(), mock.Anything).
+				userStoreBD.On("Create", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(uuid.NewV7(), nil).
 					Once()
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -1028,7 +1037,7 @@ func TestRegistrationUser(t *testing.T) {
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
-					Err:     "Internal Server Error",
+					Err:     "internal_server_error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
 				})
@@ -1036,7 +1045,7 @@ func TestRegistrationUser(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"missing_device_id": {
-			Comm:              "нет заголовка Device-Id",
+			Comm:              "нет cookie DeviceId",
 			IsError:           true,
 			IpReq:             ip1,
 			AgentReq:          agent1,
@@ -1081,31 +1090,6 @@ func TestRegistrationUser(t *testing.T) {
 					Err:     "bad request",
 					Code:    "BAD_REQUEST",
 					Message: "The request is missing important fields.",
-				})
-			},
-			fnCheckMethods: checkMethods,
-		},
-		"wrong_content_type": {
-			Comm:              "Content-Type не application/json",
-			IsError:           true,
-			IpReq:             ip1,
-			AgentReq:          agent1,
-			DeviceIdReq:       deviceId1,
-			ContentType:       "text/plain",
-			UserName:          username1,
-			Password:          pass1,
-			FieldBodyForCheck: []string{"error", "code", "message"},
-			MethodMustCall:    []string{},
-			MethodNoCall:      buildNoCall(),
-			fnSetUpMock: func() {
-				resetMock(&userStoreBD.Mock, t)
-				resetMock(&sessionStore.Mock, t)
-			},
-			fnReadyAnswer: func() *ResponseResult {
-				return errAnswer(http.StatusUnsupportedMediaType, middleware.ErrBody{
-					Err:     "invalid_body",
-					Code:    "INVALID_BODY",
-					Message: "Unsupported Media Type",
 				})
 			},
 			fnCheckMethods: checkMethods,
@@ -1208,7 +1192,7 @@ func TestRegistrationUser(t *testing.T) {
 			req.Header.Add("Accept", "application/json")
 
 			if val.DeviceIdReq != "" {
-				req.Header.Add("Device-Id", val.DeviceIdReq)
+				req.AddCookie(&http.Cookie{Name: "DeviceId", Value: val.DeviceIdReq})
 			}
 			if val.AgentReq != "" {
 				req.Header.Add("User-Agent", val.AgentReq)
@@ -1220,7 +1204,15 @@ func TestRegistrationUser(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 
-			authHandler.RegistrationUser(rec, req)
+			wrappedHandler := wrapHandlerWithImportantParamsMiddleware(
+				domain.GetMockAuditService(),
+				sessionStore,
+				userStoreBD,
+				cm,
+				tu,
+				http.HandlerFunc(authHandler.RegistrationUser),
+			)
+			wrappedHandler.ServeHTTP(rec, req)
 
 			mustResp := val.fnReadyAnswer()
 
@@ -1302,7 +1294,7 @@ func TestRegistrationUser(t *testing.T) {
 //		empty_password           - пустой пароль → 400
 //		db_error                 - GetByOpt вернул произвольную ошибку → 500
 //		session_registration_fail - sessionStore.Registration упал → 500
-//		missing_headers          - нет User-Agent/Device-Id → 400
+//		missing_headers          - нет User-Agent/DeviceId cookie → 400
 //		wrong_content_type       - Content-Type не application/json → 415
 func TestSignIn(t *testing.T) {
 	util.LoadEnvFile()
@@ -1340,7 +1332,7 @@ func TestSignIn(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD, userCacheStore)
+	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD, userCacheStore, service.NewUserService(userCacheStore, userStoreBD, sessionStore, domain.GetMockAuditService(), tu, cm))
 
 	type TableTest struct {
 		// пояснение для теста
@@ -1414,7 +1406,7 @@ func TestSignIn(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("GetByOpt", context.Background(), mock.Anything).
+				userStoreBD.On("GetByOpt", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(testUser, nil).
 					Once()
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -1443,7 +1435,7 @@ func TestSignIn(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("GetByOpt", context.Background(), mock.Anything).
+				userStoreBD.On("GetByOpt", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(testUser, nil).
 					Once()
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -1472,7 +1464,7 @@ func TestSignIn(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("GetByOpt", context.Background(), mock.Anything).
+				userStoreBD.On("GetByOpt", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(testUser, nil).
 					Once()
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -1501,7 +1493,7 @@ func TestSignIn(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("GetByOpt", context.Background(), mock.Anything).
+				userStoreBD.On("GetByOpt", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(testUser, nil).
 					Once()
 			},
@@ -1533,7 +1525,7 @@ func TestSignIn(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("GetByOpt", context.Background(), mock.Anything).
+				userStoreBD.On("GetByOpt", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(nil, postgres.ErrUserDontExist).
 					Once()
 			},
@@ -1620,13 +1612,13 @@ func TestSignIn(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("GetByOpt", context.Background(), mock.Anything).
+				userStoreBD.On("GetByOpt", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(nil, errors.New("db connection reset")).
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
-					Err:     "Internal Server Error",
+					Err:     "internal_server_error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
 				})
@@ -1652,7 +1644,7 @@ func TestSignIn(t *testing.T) {
 				resetMock(&userStoreBD.Mock, t)
 				resetMock(&sessionStore.Mock, t)
 
-				userStoreBD.On("GetByOpt", context.Background(), mock.Anything).
+				userStoreBD.On("GetByOpt", context.WithoutCancel(context.Background()), mock.Anything).
 					Return(testUser, nil).
 					Once()
 				sessionStore.On("Registration", context.Background(), mock.Anything, mock.Anything).
@@ -1661,7 +1653,7 @@ func TestSignIn(t *testing.T) {
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
-					Err:     "Internal Server Error",
+					Err:     "internal_server_error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
 				})
@@ -1669,7 +1661,7 @@ func TestSignIn(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"missing_headers": {
-			Comm:              "отсутствует Device-Id",
+			Comm:              "отсутствует cookie DeviceId",
 			IsError:           true,
 			IpReq:             ip1,
 			AgentReq:          agent1,
@@ -1696,34 +1688,6 @@ func TestSignIn(t *testing.T) {
 			},
 			fnCheckMethods: checkMethods,
 		},
-		"wrong_content_type": {
-			Comm:              "Content-Type не application/json",
-			IsError:           true,
-			IpReq:             ip1,
-			AgentReq:          agent1,
-			DeviceIdReq:       deviceId1,
-			ContentType:       "text/plain",
-			UserName:          username1,
-			Password:          pass1,
-			FieldBodyForCheck: []string{"error", "code", "message"},
-			MethodMustCall:    []string{},
-			MethodNoCall: []string{
-				"GetByOpt", "Registration", "GetAllSession", "DeleteAll", "DeleteByRefresh",
-				"UpdateIpAdress", "GetSessionByFamilyId", "GetFromGracePeriodic", "CreateGracePeriodic",
-			},
-			fnSetUpMock: func() {
-				resetMock(&userStoreBD.Mock, t)
-				resetMock(&sessionStore.Mock, t)
-			},
-			fnReadyAnswer: func() *ResponseResult {
-				return errAnswer(http.StatusUnsupportedMediaType, middleware.ErrBody{
-					Err:     "invalid_body",
-					Code:    "INVALID_BODY",
-					Message: "Unsupported Media Type",
-				})
-			},
-			fnCheckMethods: checkMethods,
-		},
 	}
 
 	for name, val := range table {
@@ -1743,7 +1707,7 @@ func TestSignIn(t *testing.T) {
 			req.Header.Add("Accept", "application/json")
 
 			if val.DeviceIdReq != "" {
-				req.Header.Add("Device-Id", val.DeviceIdReq)
+				req.AddCookie(&http.Cookie{Name: "DeviceId", Value: val.DeviceIdReq})
 			}
 			if val.AgentReq != "" {
 				req.Header.Add("User-Agent", val.AgentReq)
@@ -1752,7 +1716,16 @@ func TestSignIn(t *testing.T) {
 			req.RemoteAddr = val.IpReq
 
 			rec := httptest.NewRecorder()
-			authHandler.SingIn(rec, req)
+
+			wrappedHandler := wrapHandlerWithImportantParamsMiddleware(
+				domain.GetMockAuditService(),
+				sessionStore,
+				userStoreBD,
+				cm,
+				tu,
+				http.HandlerFunc(authHandler.SingIn),
+			)
+			wrappedHandler.ServeHTTP(rec, req)
 
 			mustResp := val.fnReadyAnswer()
 
@@ -1821,11 +1794,11 @@ func TestSignIn(t *testing.T) {
 // SPEC Authentication
 // Что это и что делает? - handler проверки access JWT (RFC 6750, protected resource).
 // Клиент присылает access токен в заголовке Authorization: Bearer <token>
-// плюс заголовки User-Agent и Device-Id. Handler:
+// плюс заголовок User-Agent и cookie DeviceId. Handler:
 //  1. извлекает Bearer-токен (схема регистронезависима: RFC 6750 §2.1);
 //  2. валидирует подпись, iss, exp, iat через tu.ValidAccessToken;
 //  3. по UserId+FamilyId из claims достаёт сессию из sessionStore;
-//  4. сверяет session.DeviceId == Device-Id header и session.Agent == User-Agent header;
+//  4. сверяет session.DeviceId == DeviceId cookie и session.Agent == User-Agent header;
 //  5. если IP запроса отличается от session.Ip — вызывает UpdateIpAdress;
 //  6. на успех → 200 OK.
 //
@@ -1872,7 +1845,7 @@ func TestAuthentication(t *testing.T) {
 	userId1 := uuid.NewV7()
 	familyId1 := uuid.NewV7()
 
-	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD, userCacheStore)
+	authHandler := handler.NewAuthHandler(cm, domain.GetMockAuditService(), sessionStore, tu, userStoreBD, userCacheStore, service.NewUserService(userCacheStore, userStoreBD, sessionStore, domain.GetMockAuditService(), tu, cm))
 
 	// Валидный access токен
 	access1, _, err := tu.GeneratePairToken(userId1, familyId1, deviceId1, agent1)
@@ -2038,7 +2011,7 @@ func TestAuthentication(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"ip_changed": {
-			Comm: `все поля (Authorization, Device-Id, User-Agent) корректны и совпадают с сессией,
+			Comm: `все поля (Authorization, DeviceId cookie, User-Agent) корректны и совпадают с сессией,
 				но IP запроса отличается от session.Ip — ожидается 200 и UpdateIpAdress с новым IP`,
 			IsError:        false,
 			IpReq:          ip2,
@@ -2271,7 +2244,7 @@ func TestAuthentication(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"session_context_mismatch": {
-			Comm:           "сессия найдена, но Device-Id/User-Agent не совпадают — отзыв → 401",
+			Comm:           "сессия найдена, но DeviceId cookie/User-Agent не совпадают — отзыв → 401",
 			IsError:        true,
 			IpReq:          ip1,
 			DeviceIdReq:    "different-device",
@@ -2327,7 +2300,7 @@ func TestAuthentication(t *testing.T) {
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
-					Err:     "Internal Server Error",
+					Err:     "internal_server_error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
 				})
@@ -2345,7 +2318,7 @@ func TestAuthentication(t *testing.T) {
 				req.Header.Set("Authorization", val.AuthHeader)
 			}
 			if val.DeviceIdReq != "" {
-				req.Header.Set("Device-Id", val.DeviceIdReq)
+				req.AddCookie(&http.Cookie{Name: "DeviceId", Value: val.DeviceIdReq})
 			}
 			if val.AgentReq != "" {
 				req.Header.Set("User-Agent", val.AgentReq)
@@ -2354,7 +2327,15 @@ func TestAuthentication(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 
-			authHandler.Authentication(rec, req)
+			wrappedHandler := wrapHandlerWithImportantParamsMiddleware(
+				domain.GetMockAuditService(),
+				sessionStore,
+				userStoreBD,
+				cm,
+				tu,
+				http.HandlerFunc(authHandler.Authentication),
+			)
+			wrappedHandler.ServeHTTP(rec, req)
 
 			mustResp := val.fnReadyAnswer()
 
@@ -2399,10 +2380,10 @@ func TestAuthentication(t *testing.T) {
 // SPEC GetUserData
 // Что это и что делает? — handler чтения профиля пользователя.
 // Клиент присылает access JWT в Authorization: Bearer <token>,
-// а также обязательные заголовки Device-Id и User-Agent.
+// а также обязательные cookie DeviceId и заголовок User-Agent.
 // Handler:
 //
-//  1. вызывает validateCheck (проверка IP, Device-Id, User-Agent);
+//  1. вызывает validateCheck (проверка IP, DeviceId cookie, User-Agent);
 //
 //  2. извлекает Bearer-токен (регистронезависима — RFC 6750 §2.1);
 //
@@ -2428,7 +2409,7 @@ func TestAuthentication(t *testing.T) {
 //     user_not_found_in_db        - кеш промах, БД ErrUserDontExist → 404
 //     db_error                    - кеш промах, БД generic error → 500
 //     missing_authorization       - нет заголовка Authorization → 401
-//     missing_device_id           - нет заголовка Device-Id → 400 BAD_REQUEST
+//     missing_device_id           - нет cookie DeviceId → 400 BAD_REQUEST
 //     invalid_token               - мусор вместо JWT → 401
 //     expired_token               - exp в прошлом → 401 INVALID_GRANT + WWW-Authenticate
 func TestGetUserData(t *testing.T) {
@@ -2500,6 +2481,7 @@ func TestGetUserData(t *testing.T) {
 		tu,
 		userStoreBD,
 		userCacheStore,
+		service.NewUserService(userCacheStore, userStoreBD, sessionStore, domain.GetMockAuditService(), tu, cm),
 	)
 
 	// checkMethods сканирует Calls во всех трёх моках.
@@ -2644,7 +2626,7 @@ func TestGetUserData(t *testing.T) {
 				userCacheStore.On("Get", context.Background(), userId1).
 					Return(nil, nil).
 					Once()
-				userStoreBD.On("GetByID", context.Background(), userId1).
+				userStoreBD.On("GetByID", context.WithoutCancel(context.Background()), userId1).
 					Return(activeUser, nil).
 					Once()
 				userCacheStore.On("Set", context.Background(), activeUser).
@@ -2681,7 +2663,7 @@ func TestGetUserData(t *testing.T) {
 				userCacheStore.On("Get", context.Background(), userId1).
 					Return(nil, errors.New("redis unavailable")).
 					Once()
-				userStoreBD.On("GetByID", context.Background(), userId1).
+				userStoreBD.On("GetByID", context.WithoutCancel(context.Background()), userId1).
 					Return(activeUser, nil).
 					Once()
 				userCacheStore.On("Set", context.Background(), activeUser).
@@ -2718,7 +2700,7 @@ func TestGetUserData(t *testing.T) {
 				userCacheStore.On("Get", context.Background(), userId1).
 					Return(nil, nil).
 					Once()
-				userStoreBD.On("GetByID", context.Background(), userId1).
+				userStoreBD.On("GetByID", context.WithoutCancel(context.Background()), userId1).
 					Return(activeUser, nil).
 					Once()
 				userCacheStore.On("Set", context.Background(), activeUser).
@@ -2786,7 +2768,7 @@ func TestGetUserData(t *testing.T) {
 				userCacheStore.On("Get", context.Background(), userId1).
 					Return(nil, nil).
 					Once()
-				userStoreBD.On("GetByID", context.Background(), userId1).
+				userStoreBD.On("GetByID", context.WithoutCancel(context.Background()), userId1).
 					Return(deletedUser, nil).
 					Once()
 			},
@@ -2820,7 +2802,7 @@ func TestGetUserData(t *testing.T) {
 				userCacheStore.On("Get", context.Background(), userId1).
 					Return(nil, nil).
 					Once()
-				userStoreBD.On("GetByID", context.Background(), userId1).
+				userStoreBD.On("GetByID", context.WithoutCancel(context.Background()), userId1).
 					Return(nil, postgres.ErrUserDontExist).
 					Once()
 			},
@@ -2854,13 +2836,13 @@ func TestGetUserData(t *testing.T) {
 				userCacheStore.On("Get", context.Background(), userId1).
 					Return(nil, nil).
 					Once()
-				userStoreBD.On("GetByID", context.Background(), userId1).
+				userStoreBD.On("GetByID", context.WithoutCancel(context.Background()), userId1).
 					Return(nil, errors.New("db connection reset")).
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
-					Err:     "Internal Server Error",
+					Err:     "internal_server_error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
 				})
@@ -2884,7 +2866,7 @@ func TestGetUserData(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"missing_device_id": {
-			Comm:           "нет заголовка Device-Id → 400 BAD_REQUEST",
+			Comm:           "нет cookie DeviceId → 400 BAD_REQUEST",
 			IsError:        true,
 			AuthHeader:     "Bearer " + access1,
 			DeviceIdReq:    "", // Специально пусто
@@ -2963,7 +2945,7 @@ func TestGetUserData(t *testing.T) {
 				req.Header.Set("Authorization", val.AuthHeader)
 			}
 			if val.DeviceIdReq != "" {
-				req.Header.Set("Device-Id", val.DeviceIdReq)
+				req.AddCookie(&http.Cookie{Name: "DeviceId", Value: val.DeviceIdReq})
 			}
 			if val.AgentReq != "" {
 				req.Header.Set("User-Agent", val.AgentReq)
@@ -2971,7 +2953,16 @@ func TestGetUserData(t *testing.T) {
 			req.RemoteAddr = "1.1.1.1:5432"
 
 			rec := httptest.NewRecorder()
-			authHandler.GetUserData(rec, req)
+
+			wrappedHandler := wrapHandlerWithImportantParamsMiddleware(
+				domain.GetMockAuditService(),
+				sessionStore,
+				userStoreBD,
+				cm,
+				tu,
+				http.HandlerFunc(authHandler.GetUserData),
+			)
+			wrappedHandler.ServeHTTP(rec, req)
 
 			mustResp := val.fnReadyAnswer()
 
@@ -3034,11 +3025,11 @@ func TestGetUserData(t *testing.T) {
 // SPEC UpdateUserData
 // Что это и что делает? — handler частичного обновления профиля пользователя.
 // Клиент присылает access JWT в Authorization: Bearer <token>,
-// а также обязательные заголовки Device-Id и User-Agent.
+// а также обязательные cookie DeviceId и заголовок User-Agent.
 // В теле запроса — JSON с возможными полями: username, phone, email.
 // Handler:
 //
-//  1. вызывает checkAuth (валидация токена, сессии, IP, Device-Id, User-Agent);
+//  1. вызывает checkAuth (валидация токена, сессии, IP, DeviceId cookie, User-Agent);
 //
 //  2. проверяет Content-Type == application/json;
 //
@@ -3076,7 +3067,7 @@ func TestGetUserData(t *testing.T) {
 //     duplicate_email                  - email уже занят другим юзером → 409 CONFLICT
 //     duplicate_phone                  - phone уже занят другим юзером → 409 CONFLICT
 //     missing_authorization            - нет Authorization → 401 INVALID_TOKEN
-//     missing_device_id                - нет Device-Id → 400 BAD_REQUEST
+//     missing_device_id                - нет cookie DeviceId → 400 BAD_REQUEST
 //     invalid_token                    - мусор вместо JWT → 401 INVALID_TOKEN
 //     expired_token                    - exp в прошлом → 401 INVALID_GRANT + WWW-Authenticate
 //     invalid_json                     - битый JSON → 400 BAD_REQUEST
@@ -3110,6 +3101,7 @@ func TestUpdateUserData(t *testing.T) {
 		tu,
 		userStoreBD,
 		userCacheStore,
+		service.NewUserService(userCacheStore, userStoreBD, sessionStore, domain.GetMockAuditService(), tu, cm),
 	)
 
 	// checkMethods сканирует Calls во всех трёх моках.
@@ -3219,7 +3211,7 @@ func TestUpdateUserData(t *testing.T) {
 						LastUpdate: time.Now(),
 					}, nil).
 					Once()
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(nil).
 					Once()
 				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
@@ -3254,7 +3246,7 @@ func TestUpdateUserData(t *testing.T) {
 						LastUpdate: time.Now(),
 					}, nil).
 					Once()
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(nil).
 					Once()
 				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
@@ -3289,7 +3281,7 @@ func TestUpdateUserData(t *testing.T) {
 						LastUpdate: time.Now(),
 					}, nil).
 					Once()
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(nil).
 					Once()
 				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
@@ -3324,7 +3316,7 @@ func TestUpdateUserData(t *testing.T) {
 						LastUpdate: time.Now(),
 					}, nil).
 					Once()
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(nil).
 					Once()
 				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
@@ -3359,7 +3351,7 @@ func TestUpdateUserData(t *testing.T) {
 						LastUpdate: time.Now(),
 					}, nil).
 					Once()
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(nil).
 					Once()
 				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
@@ -3394,7 +3386,7 @@ func TestUpdateUserData(t *testing.T) {
 						LastUpdate: time.Now(),
 					}, nil).
 					Once()
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(nil).
 					Once()
 				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
@@ -3402,41 +3394,6 @@ func TestUpdateUserData(t *testing.T) {
 					Once()
 			},
 			fnReadyAnswer:  successAnswer200,
-			fnCheckMethods: checkMethods,
-		},
-		"update_null_all": {
-			Comm:           "username null → 400 VALIDATION_ERROR, только GetSessionByFamilyId",
-			IsError:        true,
-			AuthHeader:     "Bearer " + access1,
-			DeviceIdReq:    deviceId1,
-			AgentReq:       agent1,
-			RawBody:        `{"username": null, "email": null, "phone": null}`,
-			MethodMustCall: []string{"GetSessionByFamilyId"},
-			MethodNoCall:   buildNoCall("GetSessionByFamilyId"),
-			fnSetUpMock: func() {
-				resetMock(&userStoreBD.Mock, t)
-				resetMock(&userCacheStore.Mock, t)
-				resetMock(&sessionStore.Mock, t)
-
-				sessionStore.On("GetSessionByFamilyId", context.Background(), userId1, familyId1).
-					Return(&domain.Session{
-						UserId:     userId1,
-						DeviceId:   deviceId1,
-						Agent:      agent1,
-						Ip:         "1.1.1.1",
-						Version:    "jwt-1",
-						CreatedAt:  time.Now(),
-						LastUpdate: time.Now(),
-					}, nil).
-					Once()
-			},
-			fnReadyAnswer: func() *ResponseResult {
-				return errAnswer(http.StatusBadRequest, middleware.ErrBody{
-					Err:     "invalid_request",
-					Code:    "VALIDATION_ERROR",
-					Message: "Username cannot be null or empty.",
-				})
-			},
 			fnCheckMethods: checkMethods,
 		},
 		"update_mixed_null_and_values": {
@@ -3464,10 +3421,7 @@ func TestUpdateUserData(t *testing.T) {
 						LastUpdate: time.Now(),
 					}, nil).
 					Once()
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
-					Return(nil).
-					Once()
-				userCacheStore.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(nil).
 					Once()
 			},
@@ -3501,7 +3455,7 @@ func TestUpdateUserData(t *testing.T) {
 					Once()
 				err := postgres.ErrUserAlreadyExists.Clone()
 				err.Fields = append(err.Fields, "email")
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(err).
 					Once()
 			},
@@ -3541,7 +3495,7 @@ func TestUpdateUserData(t *testing.T) {
 					Once()
 				err := postgres.ErrUserAlreadyExists.Clone()
 				err.Fields = append(err.Fields, "phone")
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(err).
 					Once()
 			},
@@ -3581,7 +3535,7 @@ func TestUpdateUserData(t *testing.T) {
 			fnCheckMethods: checkMethods,
 		},
 		"missing_device_id": {
-			Comm:           "нет Device-Id → 400 BAD_REQUEST — validateCheck возвращает ошибку",
+			Comm:           "нет cookie DeviceId → 400 BAD_REQUEST — validateCheck возвращает ошибку",
 			IsError:        true,
 			AuthHeader:     "Bearer " + access1,
 			DeviceIdReq:    "",
@@ -3724,13 +3678,13 @@ func TestUpdateUserData(t *testing.T) {
 						LastUpdate: time.Now(),
 					}, nil).
 					Once()
-				userStoreBD.On("Update", context.Background(), userId1, mock.Anything).
+				userStoreBD.On("Update", context.WithoutCancel(context.Background()), userId1, mock.Anything).
 					Return(errors.New("connection reset")).
 					Once()
 			},
 			fnReadyAnswer: func() *ResponseResult {
 				return errAnswer(http.StatusInternalServerError, middleware.ErrBody{
-					Err:     "Internal Server Error",
+					Err:     "internal_server_error",
 					Code:    "AUTH_SERVICE_ERROR",
 					Message: "Authentication service is temporarily unavailable. Please try again later.",
 				})
@@ -3840,7 +3794,7 @@ func TestUpdateUserData(t *testing.T) {
 				req.Header.Set("Authorization", val.AuthHeader)
 			}
 			if val.DeviceIdReq != "" {
-				req.Header.Set("Device-Id", val.DeviceIdReq)
+				req.AddCookie(&http.Cookie{Name: "DeviceId", Value: val.DeviceIdReq})
 			}
 			if val.AgentReq != "" {
 				req.Header.Set("User-Agent", val.AgentReq)
@@ -3849,7 +3803,16 @@ func TestUpdateUserData(t *testing.T) {
 			req.RemoteAddr = "1.1.1.1:5432"
 
 			rec := httptest.NewRecorder()
-			authHandler.UpdateUserData(rec, req)
+
+			wrappedHandler := wrapHandlerWithImportantParamsMiddleware(
+				domain.GetMockAuditService(),
+				sessionStore,
+				userStoreBD,
+				cm,
+				tu,
+				http.HandlerFunc(authHandler.UpdateUserData),
+			)
+			wrappedHandler.ServeHTTP(rec, req)
 
 			mustResp := val.fnReadyAnswer()
 
@@ -3891,6 +3854,27 @@ func TestUpdateUserData(t *testing.T) {
 }
 
 // SPEC DeleteUser
+// Что это и что делает? — Handler для удаления текущего пользователя.
+// 1. Проверяет аутентификацию через checkAuth (валидация заголовков + access token + GetSessionByFamilyId из sessionStore).
+// 2. Удаляет пользователя из БД через usBd.Delete (через singleflight).
+// 3. Удаляет кеш пользователя через usCh.Del.
+// 4. Удаляет все сессии пользователя через ss.DeleteAll (ошибка игнорируется — best effort).
+// 5. Возвращает 200 OK с пустым телом.
+//
+//	Tests:
+//		correct_request                     - успешное удаление: токен валиден, Delete/Del/DeleteAll прошли → 200
+//		db_delete_error                     - Delete из БД вернул ошибку → 500, Del и DeleteAll НЕ вызываются
+//		cache_del_error                     - Delete прошёл, но Del из кеша вернул ошибку → 500, DeleteAll НЕ вызывается
+//		session_delete_all_error_best_effort - Delete и Del прошли, DeleteAll упал → 200 (ошибка игнорируется)
+//		token_expired                       - Access токен просрочен → 401 INVALID_GRANT
+//		token_invalid_signature             - Access токен с невалидной подписью → 401 INVALID_TOKEN
+//		token_reuse_detected                - Access токен из будущего (reuse) → 401 INVALID_TOKEN + DeleteByRefresh
+//		session_not_found                   - Токен валиден, но сессия не найдена → 401 INVALID_TOKEN
+//		session_context_mismatch            - DeviceId/Agent/Version не совпадают → 401 SESSION_CONTEXT_MISMATCH + DeleteByRefresh
+//		missing_auth_header                 - Нет Authorization заголовка → 401 INVALID_TOKEN
+//		missing_device_id                   - Нет cookie DeviceId → 400 BAD_REQUEST
+//		missing_user_agent                  - Нет заголовка User-Agent → 400 BAD_REQUEST
+//		bad_remote_addr                     - Невалидный RemoteAddr (нет порта) → 400 BAD_REQUEST
 func TestDeleteUser(t *testing.T) {
 
 }
@@ -3971,4 +3955,29 @@ func userNotFoundAnswer() *ResponseResult {
 		Code:    "USER_NOT_FOUND",
 		Message: "User not found or has been deleted.",
 	})
+}
+
+// wrapHandlerWithImportantParamsMiddleware оборачивает handler в middleware.GetImpotantParams.
+// Возвращает http.Handler, который можно вызвать через ServeHTTP.
+func wrapHandlerWithImportantParamsMiddleware(
+	audit domain.AuditService,
+	sessionStore domain.SessionStore,
+	userStore domain.UserStore,
+	cm *config.ConfigManager,
+	tu *tokens.TokenUtil,
+	handler http.Handler,
+) http.Handler {
+	authMid := middleware.NewAuthMiddleware(audit, sessionStore, userStore, cm, tu)
+	return authMid.GetImpotantParams(handler)
+}
+
+// setUserDataInContext заполняет OperationContext.UserData в контексте запроса.
+// Необходимо для handler'ов, которые ожидают UserData уже заполненным (RegistrationUser).
+func setUserDataInContext(req *http.Request, user *domain.User) *http.Request {
+	oc, ok := req.Context().Value(domain.OperCtxKey).(*domain.OperationContext)
+	if !ok {
+		return req
+	}
+	oc.UserData = user
+	return req.WithContext(context.WithValue(req.Context(), domain.OperCtxKey, oc))
 }

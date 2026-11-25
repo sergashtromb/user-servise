@@ -49,6 +49,7 @@ type EventPlace string
 const (
 	EventPlaceStore          EventPlace = "STORE"
 	EventPlaceHandler        EventPlace = "HANDLER"
+	EventPlaceService        EventPlace = "SERVICE"
 	EventPlaceMiddleware     EventPlace = "MIDDLEWARE"
 	EventPlaceAuthMiddleware EventPlace = "AUTH_MIDDLEWARE"
 	EventPlaceSystem         EventPlace = "SYSTEM"

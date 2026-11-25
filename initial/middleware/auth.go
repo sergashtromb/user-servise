@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"user_service/domain"
 	"user_service/infrastructure/tokens"
 	"uuid"
+
+	"github.com/vfaronov/httpheader"
 )
 
 const (
@@ -19,6 +22,8 @@ const (
 	HeadWWWAuthenticate = "WWW-Authenticate"
 	HeadContentType     = "Content-Type"
 	HeadUserAgent       = "User-Agent"
+	HeadXRealIP         = "X-Real-IP"
+	HeadForwarded       = "Forwarded"
 
 	ValHeadAppJson = "application/json"
 	ValHeadBearer  = "Bearer"
@@ -56,6 +61,11 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 		traceId, ok := ctx.Value(domain.TraceKey).(string)
 		if !ok {
 			traceId = ""
+		}
+
+		oc, ok := ctx.Value(domain.OperCtxKey).(*domain.OperationContext)
+		if !ok {
+			oc = &domain.OperationContext{Ctx: ctx, TraceId: traceId}
 		}
 
 		authHeader := r.Header.Get("Authorization")
@@ -130,34 +140,37 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 			return
 		}
 
-		cooki := r.Cookies()
 		var deviceId string
+		if oc.DeviceId == "" {
+			cooki := r.Cookies()
 
-		for _, val := range cooki {
-			if val.Name == "DeviceId" {
-				deviceId = val.Value
-				break
+			for _, val := range cooki {
+				if val.Name == "DeviceId" {
+					deviceId = val.Value
+					oc.DeviceId = deviceId
+					break
+				}
 			}
+		} else {
+			deviceId = oc.DeviceId
 		}
 
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			strerr := err.Error()
-			event := domain.NewFailedEvent(domain.EventFailedParseIpFromRemoteAddr, domain.EventPlaceAuthMiddleware,
-				&strerr, "", traceId)
-			am.audit.Log(ctx, event)
-
-			errBody := ErrBody{
-				Err:     "Unauthorized",
-				Code:    "USER_NOT_FOUND",
-				Message: "User session is invalid or user not found",
-			}
-			wwwErr := "Bearer error=\"invalid_token\", error_description=\"The access token is unknown or invalid\""
-			sendErrorPattern(w, am.audit, traceId, ctx, errBody, wwwErr, 0)
-			return
+		var ip string
+		if oc.Ip == "" {
+			ip := GetIpWithFallback(r)
+			oc.Ip = ip
+		} else {
+			ip = oc.Ip
 		}
 
-		agent := r.Header.Get(HeadUserAgent)
+		var agent string
+		if oc.Agent == "" {
+			agent := r.Header.Get(HeadUserAgent)
+			oc.Agent = agent
+		} else {
+			agent = oc.Agent
+		}
+
 		userId := tokenData.UserId
 		familyId := tokenData.FamilyId
 		if ip == "" || deviceId == "" || agent == "" || userId == uuid.Nil() || familyId == uuid.Nil() {
@@ -184,7 +197,54 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 			returnErrorSessionMiss(w, am.audit, traceId, ctx)
 			return
 		}
-		next.ServeHTTP(w, r)
+
+		oc.UserId = userId
+		oc.Hexid = hex.EncodeToString(userId[:])
+		oc.FamilyId = familyId
+
+		newCtx := context.WithValue(r.Context(), domain.OperCtxKey, &oc)
+		next.ServeHTTP(w, r.WithContext(newCtx))
+	})
+}
+
+func (am *AuthMiddleware) GetImpotantParams(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		var oc domain.OperationContext
+
+		ctx := r.Context()
+		traceId, ok := ctx.Value(domain.TraceKey).(string)
+		if !ok {
+			traceId = ""
+		}
+
+		oc.Ctx = ctx
+		oc.TraceId = traceId
+
+		cooki := r.Cookies()
+		var deviceId string
+
+		for _, val := range cooki {
+			if val.Name == "DeviceId" {
+				deviceId = val.Value
+				break
+			}
+		}
+
+		ip := GetIpWithFallback(r)
+		agent := r.Header.Get(HeadUserAgent)
+
+		if ip == "" || deviceId == "" || agent == "" {
+			returnErrorBadRequest(w, am.audit, traceId, ctx)
+			return
+		}
+
+		oc.Agent = agent
+		oc.DeviceId = deviceId
+		oc.Ip = ip
+
+		newCtx := context.WithValue(r.Context(), domain.OperCtxKey, &oc)
+		next.ServeHTTP(w, r.WithContext(newCtx))
 	})
 }
 
@@ -196,6 +256,15 @@ func returnErrorSessionMiss(w http.ResponseWriter, audit domain.AuditService, tr
 	}
 	wwwErr := "Bearer error=\"invalid_token\", error_description=\"Session context mismatch. Security validation failed.\""
 	sendErrorPattern(w, audit, traceId, ctx, errBody, wwwErr, 0)
+}
+
+func returnErrorBadRequest(w http.ResponseWriter, audit domain.AuditService, traceId string, ctx context.Context) {
+	errBody := ErrBody{
+		Err:     "bad request",
+		Code:    "BAD_REQUEST",
+		Message: "The request is missing important fields.",
+	}
+	sendErrorPattern(w, audit, traceId, ctx, errBody, "", http.StatusBadRequest)
 }
 
 func returnErrorEmptyToken(w http.ResponseWriter, audit domain.AuditService, traceId string, ctx context.Context) {
@@ -249,4 +318,47 @@ func sendErrorPattern(w http.ResponseWriter, audit domain.AuditService, traceId 
 	w.WriteHeader(code)
 	w.Write(jsonBt)
 
+}
+
+// GetIp извлекает реальный IP клиента с учётом прокси-заголовков.
+// Порядок приоритета: X-Forwarded-For → X-Real-IP → Forwarded → RemoteAddr.
+func GetIp(r *http.Request) (string, error) {
+
+	xForwardedFor := r.Header.Get("X-Forwarded-For")
+	if xForwardedFor != "" {
+		ips := strings.Split(xForwardedFor, ",")
+		if len(ips) > 0 {
+			return strings.TrimSpace(ips[0]), nil
+		}
+	}
+
+	xRealIp := r.Header.Get(HeadXRealIP)
+	if xRealIp != "" {
+		return strings.TrimSpace(xRealIp), nil
+	}
+
+	data := httpheader.Forwarded(r.Header)
+	if len(data) > 0 {
+		return data[0].For.IP.String(), nil
+	}
+
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return "", err
+	}
+
+	return ip, nil
+}
+
+// GetIpWithFallback — обёртка над GetIp: при ошибке возвращает IP из RemoteAddr.
+func GetIpWithFallback(r *http.Request) string {
+	ip, err := GetIp(r)
+	if err != nil {
+		fallback, _, ferr := net.SplitHostPort(r.RemoteAddr)
+		if ferr != nil {
+			return ""
+		}
+		return fallback
+	}
+	return ip
 }

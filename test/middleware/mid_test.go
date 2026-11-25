@@ -860,25 +860,61 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 		CreatedAt: time.Now().Add(-20 * time.Hour),
 	}
 
+	trueSessionWithIp203 := domain.Session{
+		UserId:    id1,
+		DeviceId:  "12345",
+		Agent:     "chrome",
+		Ip:        "203.0.113.50",
+		CreatedAt: time.Now().Add(-20 * time.Hour),
+	}
+
+	trueSessionWithIp198 := domain.Session{
+		UserId:    id1,
+		DeviceId:  "12345",
+		Agent:     "chrome",
+		Ip:        "198.51.100.23",
+		CreatedAt: time.Now().Add(-20 * time.Hour),
+	}
+
+	trueSessionWithIp192 := domain.Session{
+		UserId:    id1,
+		DeviceId:  "12345",
+		Agent:     "chrome",
+		Ip:        "192.0.2.1",
+		CreatedAt: time.Now().Add(-20 * time.Hour),
+	}
+
+	trueSessionWithIp100 := domain.Session{
+		UserId:    id1,
+		DeviceId:  "12345",
+		Agent:     "chrome",
+		Ip:        "100.200.50.10",
+		CreatedAt: time.Now().Add(-20 * time.Hour),
+	}
+
 	table := []struct {
-		Name            string
-		Comm            string
-		IsError         bool
-		UserId          uuid.UUID
-		FamilyId        uuid.UUID
-		DeviceId        string
-		Agent           string
-		Exp             time.Time
-		IssAt           time.Time
-		Iss             string
-		IpReq           string
-		AgentReq        string
-		DeviceIdReq     string
-		Sessions        *domain.Session
-		MethodMustCall  []string
-		MethodNoCall    []string
-		fnSetUpMock     func()
-		fnGetRespResult func() *ResponseResult
+		Name             string
+		Comm             string
+		IsError          bool
+		UserId           uuid.UUID
+		FamilyId         uuid.UUID
+		DeviceId         string
+		Agent            string
+		Exp              time.Time
+		IssAt            time.Time
+		Iss              string
+		IpReq            string
+		AgentReq         string
+		DeviceIdReq      string
+		XForwardedFor    string
+		XRealIp          string
+		Forwarded        string
+		SessionIp        string
+		Sessions         *domain.Session
+		MethodMustCall   []string
+		MethodNoCall     []string
+		fnSetUpMock      func()
+		fnGetRespResult  func() *ResponseResult
 	}{
 		{
 			Name:           "correct_request",
@@ -892,6 +928,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IssAt:          time.Now(),
 			Iss:            tokens.Issuer,
 			IpReq:          "1.1.1.1:1234",
+			SessionIp:      "1.1.1.1",
 			MethodMustCall: []string{"GetSessionByFamilyId"},
 			MethodNoCall:   []string{},
 			Sessions:       &trueSession,
@@ -965,6 +1002,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
+			SessionIp:      "1.1.1.1",
 			Sessions:       &trueSession,
 			MethodMustCall: []string{},
 			MethodNoCall:   []string{"GetSessionByFamilyId"},
@@ -1009,6 +1047,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
+			SessionIp:      "1.1.1.1",
 			Sessions:       &trueSession,
 			MethodMustCall: []string{},
 			MethodNoCall:   []string{},
@@ -1052,6 +1091,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "3.3.3.3:1234",
 			AgentReq:       "Safari",
 			DeviceIdReq:    "54321",
+			SessionIp:      "1.1.1.1",
 			Sessions:       &trueSession,
 			MethodMustCall: []string{"GetSessionByFamilyId"},
 			MethodNoCall:   []string{},
@@ -1098,6 +1138,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "3.3.3.3:1234",
 			AgentReq:       "Safari",
 			DeviceIdReq:    "54321",
+			SessionIp:      "1.1.1.1",
 			Sessions:       nil,
 			MethodMustCall: []string{"GetSessionByFamilyId"},
 			MethodNoCall:   []string{},
@@ -1144,6 +1185,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			IpReq:          "1.1.1.1:1234",
 			AgentReq:       "chrome",
 			DeviceIdReq:    "12345",
+			SessionIp:      "1.1.1.1",
 			Sessions:       &trueSession,
 			MethodMustCall: []string{"GetSessionByFamilyId"},
 			MethodNoCall:   []string{},
@@ -1171,6 +1213,191 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 					Code:    resp.Code,
 					Headers: resp.Header(),
 					Body:    resp.Body.Bytes(), // Используем .Bytes() вместо .String()
+				}
+			},
+		},
+		{
+			Name:            "ip_from_x_forwarded_for",
+			Comm:            "should extract real IP from X-Forwarded-For header",
+			IsError:         false,
+			UserId:          id1,
+			FamilyId:        familyId1,
+			DeviceId:        "12345",
+			Agent:           "chrome",
+			Exp:             time.Now().Add(15 * time.Minute),
+			IssAt:           time.Now(),
+			Iss:             tokens.Issuer,
+			IpReq:           "10.0.0.1:9999",
+			XForwardedFor:   "203.0.113.50, 70.41.3.18, 150.172.238.176",
+			AgentReq:        "chrome",
+			DeviceIdReq:     "12345",
+			SessionIp:       "203.0.113.50",
+			MethodMustCall:  []string{"GetSessionByFamilyId"},
+			MethodNoCall:    []string{},
+			Sessions:        &trueSessionWithIp203,
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
+					Return(&trueSessionWithIp203, nil).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+				respNew := httptest.NewRecorder()
+				respNew.WriteHeader(http.StatusOK)
+				return &ResponseResult{
+					Code:    respNew.Code,
+					Headers: respNew.Header(),
+					Body:    respNew.Body.Bytes(),
+				}
+			},
+		},
+		{
+			Name:            "ip_from_x_forwarded_for_single",
+			Comm:            "should extract single IP from X-Forwarded-For",
+			IsError:         false,
+			UserId:          id1,
+			FamilyId:        familyId1,
+			DeviceId:        "12345",
+			Agent:           "chrome",
+			Exp:             time.Now().Add(15 * time.Minute),
+			IssAt:           time.Now(),
+			Iss:             tokens.Issuer,
+			IpReq:           "10.0.0.1:9999",
+			XForwardedFor:   "198.51.100.23",
+			AgentReq:        "chrome",
+			DeviceIdReq:     "12345",
+			SessionIp:       "198.51.100.23",
+			MethodMustCall:  []string{"GetSessionByFamilyId"},
+			MethodNoCall:    []string{},
+			Sessions:        &trueSessionWithIp198,
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
+					Return(&trueSessionWithIp198, nil).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+				respNew := httptest.NewRecorder()
+				respNew.WriteHeader(http.StatusOK)
+				return &ResponseResult{
+					Code:    respNew.Code,
+					Headers: respNew.Header(),
+					Body:    respNew.Body.Bytes(),
+				}
+			},
+		},
+		{
+			Name:            "ip_from_x_real_ip_fallback",
+			Comm:            "should use X-Real-IP when X-Forwarded-For is empty",
+			IsError:         false,
+			UserId:          id1,
+			FamilyId:        familyId1,
+			DeviceId:        "12345",
+			Agent:           "chrome",
+			Exp:             time.Now().Add(15 * time.Minute),
+			IssAt:           time.Now(),
+			Iss:             tokens.Issuer,
+			IpReq:           "10.0.0.1:9999",
+			XRealIp:         "192.0.2.1",
+			AgentReq:        "chrome",
+			DeviceIdReq:     "12345",
+			SessionIp:       "192.0.2.1",
+			MethodMustCall:  []string{"GetSessionByFamilyId"},
+			MethodNoCall:    []string{},
+			Sessions:        &trueSessionWithIp192,
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
+					Return(&trueSessionWithIp192, nil).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+				respNew := httptest.NewRecorder()
+				respNew.WriteHeader(http.StatusOK)
+				return &ResponseResult{
+					Code:    respNew.Code,
+					Headers: respNew.Header(),
+					Body:    respNew.Body.Bytes(),
+				}
+			},
+		},
+		{
+			Name:            "ip_x_forwarded_for_takes_priority",
+			Comm:            "X-Forwarded-For should take priority over X-Real-IP",
+			IsError:         false,
+			UserId:          id1,
+			FamilyId:        familyId1,
+			DeviceId:        "12345",
+			Agent:           "chrome",
+			Exp:             time.Now().Add(15 * time.Minute),
+			IssAt:           time.Now(),
+			Iss:             tokens.Issuer,
+			IpReq:           "10.0.0.1:9999",
+			XForwardedFor:   "100.200.50.10",
+			XRealIp:         "100.200.50.99",
+			AgentReq:        "chrome",
+			DeviceIdReq:     "12345",
+			SessionIp:       "100.200.50.10",
+			MethodMustCall:  []string{"GetSessionByFamilyId"},
+			MethodNoCall:    []string{},
+			Sessions:        &trueSessionWithIp100,
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
+					Return(&trueSessionWithIp100, nil).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+				respNew := httptest.NewRecorder()
+				respNew.WriteHeader(http.StatusOK)
+				return &ResponseResult{
+					Code:    respNew.Code,
+					Headers: respNew.Header(),
+					Body:    respNew.Body.Bytes(),
+				}
+			},
+		},
+		{
+			Name:            "ip_session_mismatch_x_forwarded_for",
+			Comm:            "should return SESSION_COMPROMISED when extracted IP from X-Forwarded-For doesn't match session",
+			IsError:         true,
+			UserId:          id1,
+			FamilyId:        familyId1,
+			DeviceId:        "12345",
+			Agent:           "chrome",
+			Exp:             time.Now().Add(15 * time.Minute),
+			IssAt:           time.Now(),
+			Iss:             tokens.Issuer,
+			IpReq:           "10.0.0.1:9999",
+			XForwardedFor:   "5.5.5.5",
+			AgentReq:        "chrome",
+			DeviceIdReq:     "12345",
+			SessionIp:       "1.1.1.1",
+			MethodMustCall:  []string{"GetSessionByFamilyId"},
+			MethodNoCall:    []string{},
+			Sessions:        &trueSession,
+			fnSetUpMock: func() {
+				resetMock(&sessionStoreMock.Mock, t)
+				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
+					Return(&trueSession, nil).
+					Once()
+			},
+			fnGetRespResult: func() *ResponseResult {
+				bodyJson := `{
+				"error": "Unauthorized",
+				"message": "Session context mismatch. Security violation.",
+				"code": "SESSION_COMPROMISED"
+			}`
+				resp := httptest.NewRecorder()
+				resp.WriteHeader(http.StatusUnauthorized)
+				resp.Write([]byte(bodyJson))
+				resp.Header().Add("WWW-Authenticate",
+					`Bearer error="invalid_token", error_description="Session context mismatch. Security validation failed."`)
+				resp.Header().Set("Content-Type", "application/json")
+				return &ResponseResult{
+					Code:    resp.Code,
+					Headers: resp.Header(),
+					Body:    resp.Body.Bytes(),
 				}
 			},
 		},
@@ -1204,6 +1431,13 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 			req.Header.Set("User-Agent", val.Agent)
 
 			req.RemoteAddr = val.IpReq
+
+			if val.XForwardedFor != "" {
+				req.Header.Set("X-Forwarded-For", val.XForwardedFor)
+			}
+			if val.XRealIp != "" {
+				req.Header.Set("X-Real-IP", val.XRealIp)
+			}
 
 			cookie := &http.Cookie{
 				Name:     "DeviceId",
