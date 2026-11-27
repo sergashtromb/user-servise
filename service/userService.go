@@ -34,6 +34,14 @@ type UserService struct {
 
 func NewUserService(uc dm.UserCacheStore, us dm.UserStore, ss dm.SessionStore,
 	ah dm.AuditService, tu *tokens.TokenUtil, conf *config.ConfigManager) *UserService {
+
+	// все условия соблюдены, единственная причина почему отвалился это не сработал rand с системными вызовами
+	//	тогда в целом вся система не сможет работать корректно и коректно выдавать хеши пароль, ставим панику
+	fakePass, err := bcrypt.GenerateFromPassword([]byte("fake_password"), 10)
+	if err != nil {
+		panic("failed generate fake password hash, system cannot work!!!")
+	}
+
 	return &UserService{
 		audit:        ah,
 		userCache:    uc,
@@ -41,6 +49,7 @@ func NewUserService(uc dm.UserCacheStore, us dm.UserStore, ss dm.SessionStore,
 		sessionStore: ss,
 		tokenUtil:    tu,
 		conf:         conf,
+		fakePass:     fakePass,
 	}
 }
 
@@ -479,6 +488,30 @@ func (us *UserService) DeleteUser(oc *dm.OperationContext) *dm.OperationError {
 		event := domain.NewFailedEvent(domain.EventDeleteSessionFailed, domain.EventPlaceHandler,
 			&strerr, key, oc.TraceId)
 		us.audit.Log(oc.Ctx, event)
+	}
+
+	return nil
+}
+
+func (us *UserService) Logout(oc *dm.OperationContext) (bool, *dm.OperationError) {
+
+	err := us.sessionStore.DeleteByRefresh(oc.Ctx, oc.UserId, oc.FamilyId)
+	if custerr.ErrNotFound.Is(err) {
+		return false, nil
+	} else if err != nil {
+		us.logFailEvent(oc.Ctx, dm.EventLogoutFailed, err.Error(), oc.Hexid, oc.TraceId)
+		return false, &dm.ErrInternalServerError
+	}
+
+	return true, nil
+}
+
+func (us *UserService) LogoutAll(oc *dm.OperationContext) *dm.OperationError {
+
+	err := us.sessionStore.DeleteAll(oc.Ctx, oc.UserId)
+	if err != nil {
+		us.logFailEvent(oc.Ctx, domain.EventLogoutAllFailed, err.Error(), oc.Hexid, oc.TraceId)
+		return &dm.ErrInternalServerError
 	}
 
 	return nil

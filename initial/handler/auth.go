@@ -314,6 +314,47 @@ func (ah *AuthHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (ah *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	oc, ok := ctx.Value(domain.OperCtxKey).(*domain.OperationContext)
+	if !ok {
+		ah.logFailedEvent(ctx, domain.EventLogoutFailed, "request don't have operation context",
+			"", "")
+		middleware.SendError(w, domain.NewOperationContext(ctx, ""), &domain.ErrInternalServerError, ah.audit, domain.EventLogoutFailed)
+		return
+	}
+
+	onceLogout, errBody := ah.us.Logout(oc)
+	if errBody != nil {
+		middleware.SendError(w, oc, errBody, ah.audit, domain.EventLogoutFailed)
+		return
+	}
+
+	if onceLogout {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (ah *AuthHandler) LogoutAll(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	oc, ok := ctx.Value(domain.OperCtxKey).(*domain.OperationContext)
+	if !ok {
+		ah.logFailedEvent(ctx, domain.EventLogoutAllFailed, "request don't have operation context",
+			"", "")
+		middleware.SendError(w, domain.NewOperationContext(ctx, ""), &domain.ErrInternalServerError, ah.audit, domain.EventLogoutAllFailed)
+		return
+	}
+
+	errBody := ah.us.LogoutAll(oc)
+	if errBody != nil {
+		middleware.SendError(w, oc, errBody, ah.audit, domain.EventLogoutAllFailed)
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func (ah *AuthHandler) getUserFromBody(w http.ResponseWriter, r *http.Request, oc *domain.OperationContext, failEvent domain.EventType) bool {
 
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRegistrationBody)

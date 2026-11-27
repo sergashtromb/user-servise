@@ -36,6 +36,10 @@ const (
 	EventRegistrationFailed  EventType = "registration_failed"
 	EventAutheticationSucces EventType = "authetication_succes"
 	EventAutheticationFailed EventType = "authetication_failed"
+	EventLogoutFailed        EventType = "logout_failed"
+	EventLogoutSuccess       EventType = "logout_success"
+	EventLogoutAllFailed     EventType = "logout_all_failed"
+	EventLogoutAllSuccess    EventType = "logout_all_success"
 
 	EventInboxRequestStart EventType = "inbox_request_start"
 	EventInboxRequestEnd   EventType = "inbox_request_end"
