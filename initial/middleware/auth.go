@@ -9,6 +9,7 @@ import (
 	"strings"
 	"user_service/config"
 	"user_service/domain"
+	"user_service/infrastructure/reporedis/custerr"
 	"user_service/infrastructure/tokens"
 	"uuid"
 
@@ -27,6 +28,7 @@ const (
 
 	ValHeadAppJson = "application/json"
 	ValHeadBearer  = "Bearer"
+	Bearer         = "bearer "
 )
 
 type AuthMiddleware struct {
@@ -48,10 +50,41 @@ func NewAuthMiddleware(au domain.AuditService, ss domain.SessionStore, repo doma
 	}
 }
 
-type ErrBody struct {
-	Err     string `json:"error"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
+// SendError отправляет HTTP-ответ с ошибкой и логирует событие.
+func SendError(w http.ResponseWriter, oc *domain.OperationContext, err *domain.OperationError,
+	audit domain.AuditService, eventType domain.EventType) {
+
+	if oc == nil || err == nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	jsonBt, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		strErr := marshalErr.Error()
+		event := domain.NewFailedEvent(domain.EventFailedParseErrAuthAnswer,
+			domain.EventPlaceAuthMiddleware, &strErr, "", oc.TraceId)
+		audit.Log(oc.Ctx, event)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if err.WWWAns != "" {
+		w.Header().Set(HeadWWWAuthenticate, err.WWWAns)
+	}
+	w.Header().Set(HeadContentType, ValHeadAppJson)
+
+	code := err.StatusCode
+	if code == 0 {
+		code = http.StatusUnauthorized
+	}
+
+	w.WriteHeader(code)
+	w.Write(jsonBt)
+
+	event := domain.NewFailedEvent(eventType, domain.EventPlaceAuthMiddleware,
+		&err.Message, "", oc.TraceId)
+	audit.Log(oc.Ctx, event)
 }
 
 func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler {
@@ -68,75 +101,61 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 			oc = &domain.OperationContext{Ctx: ctx, TraceId: traceId}
 		}
 
-		authHeader := r.Header.Get("Authorization")
+		authHeader := r.Header.Get(HeadAuthorization)
 		if authHeader == "" {
-			returnErrorEmptyToken(w, am.audit, traceId, ctx)
+			SendError(w, oc, &domain.ErrTokenInvalidMsg, am.audit, domain.EventAutheticationFailed)
 			return
 		}
 
-		token := strings.TrimPrefix(authHeader, ValHeadBearer+" ")
+		token, ok := getBearerData(authHeader)
+		if !ok {
+			SendError(w, oc, &domain.ErrTokenInvalidMsg, am.audit, domain.EventAutheticationFailed)
+			return
+		}
+
 		if token == "" {
-			returnErrorEmptyToken(w, am.audit, traceId, ctx)
+			SendError(w, oc, &domain.ErrTokenInvalidMsg, am.audit, domain.EventAutheticationFailed)
 			return
 		}
 
 		tokenData, errValid := am.tu.ValidAccessToken(token)
 		if tokens.ErrExpToken.Is(errValid) {
-
-			errBody := ErrBody{
-				Err:     "Unauthorized",
-				Code:    "TOKEN_EXPIRED",
-				Message: "The access token expired",
+			SendError(w, oc, &domain.ErrTokenExpiredHandler, am.audit, domain.EventAutheticationFailed)
+			return
+		} else if tokens.ErrFutureDateToken.Is(errValid) {
+			// Token with iat in future — revoke session
+			sserr := am.sessionStore.DeleteByRefresh(oc.Ctx, tokenData.UserId, tokenData.FamilyId)
+			if sserr != nil {
+				srterr := sserr.Error()
+				event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceAuthMiddleware,
+					&srterr, "", oc.TraceId)
+				am.audit.Log(oc.Ctx, event)
 			}
-
-			wwwErr := "Bearer error=\"invalid_token\", error_description=\"The access token expired\""
-			sendErrorPattern(w, am.audit, traceId, ctx, errBody, wwwErr, 0)
+			SendError(w, oc, &domain.ErrTokenReuseDetected, am.audit, domain.EventAutheticationFailed)
 			return
 		} else if errValid != nil {
-
-			errBody := ErrBody{
-				Err:     "Unauthorized",
-				Code:    "TOKEN_INVALID",
-				Message: "Access token invalid",
-			}
-
-			wwwErr := "Bearer error=\"invalid_token\", error_description=\"The access token invalid\""
-			sendErrorPattern(w, am.audit, traceId, ctx, errBody, wwwErr, 0)
+			SendError(w, oc, &domain.ErrTokenInvalidMsg, am.audit, domain.EventAutheticationFailed)
 			return
 		}
 
 		if tokenData.UserId == uuid.Nil() || tokenData.FamilyId == uuid.Nil() ||
 			tokenData.Agent == "" || tokenData.DeviceId == "" {
-			errBody := ErrBody{
-				Err:     "Unauthorized",
-				Code:    "TOKEN_INVALID",
-				Message: "Access token invalid",
-			}
-
-			wwwErr := "Bearer error=\"invalid_token\", error_description=\"The access token invalid\""
-			sendErrorPattern(w, am.audit, traceId, ctx, errBody, wwwErr, 0)
+			SendError(w, oc, &domain.ErrTokenInvalidMsg, am.audit, domain.EventAutheticationFailed)
 			return
 		}
 
-		session, err := am.sessionStore.GetSessionByFamilyId(ctx, tokenData.UserId, tokenData.FamilyId)
+		session, err := am.sessionStore.GetSessionByFamilyId(oc.Ctx, tokenData.UserId, tokenData.FamilyId)
 		if err != nil {
-			errBody := ErrBody{
-				Err:     "Internal Server Error",
-				Code:    "AUTH_SERVICE_ERROR",
-				Message: "Authentication service is temporarily unavailable. Please try again later.",
+			if custerr.ErrNotFound.Is(err) {
+				SendError(w, oc, &domain.ErrSessionInvalid, am.audit, domain.EventAutheticationFailed)
+				return
 			}
-			sendErrorPattern(w, am.audit, traceId, ctx, errBody, "", http.StatusInternalServerError)
+			SendError(w, oc, &domain.ErrInternalServerError, am.audit, domain.EventAutheticationFailed)
 			return
 		}
 
 		if session == nil {
-			errBody := ErrBody{
-				Err:     "Unauthorized",
-				Code:    "USER_NOT_FOUND",
-				Message: "User session is invalid or user not found",
-			}
-			wwwErr := "Bearer error=\"invalid_token\", error_description=\"The access token is unknown or invalid\""
-			sendErrorPattern(w, am.audit, traceId, ctx, errBody, wwwErr, 0)
+			SendError(w, oc, &domain.ErrSessionInvalid, am.audit, domain.EventAutheticationFailed)
 			return
 		}
 
@@ -157,7 +176,7 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 
 		var ip string
 		if oc.Ip == "" {
-			ip := GetIpWithFallback(r)
+			ip = GetIpWithFallback(r)
 			oc.Ip = ip
 		} else {
 			ip = oc.Ip
@@ -165,7 +184,7 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 
 		var agent string
 		if oc.Agent == "" {
-			agent := r.Header.Get(HeadUserAgent)
+			agent = r.Header.Get(HeadUserAgent)
 			oc.Agent = agent
 		} else {
 			agent = oc.Agent
@@ -174,35 +193,52 @@ func (am *AuthMiddleware) CheckInboxAccessToken(next http.Handler) http.Handler 
 		userId := tokenData.UserId
 		familyId := tokenData.FamilyId
 		if ip == "" || deviceId == "" || agent == "" || userId == uuid.Nil() || familyId == uuid.Nil() {
-			returnErrorSessionMiss(w, am.audit, traceId, ctx)
+			SendError(w, oc, &domain.ErrTokenInvalidMsg, am.audit, domain.EventAutheticationFailed)
 			return
 		}
 
-		var finderSessHeader bool
-		var finderSessToken bool
-
-		if session.UserId == userId && session.Agent == agent && session.DeviceId == deviceId && session.Ip == ip {
-			finderSessHeader = true
-		}
-		if session.UserId == userId && session.Agent == tokenData.Agent && session.DeviceId == tokenData.DeviceId {
-			finderSessToken = true
-		}
-
-		if !finderSessHeader || !finderSessToken {
-			returnErrorSessionMiss(w, am.audit, traceId, ctx)
+		// Check session context: compare with token claims first
+		if session.UserId != userId || session.Agent != tokenData.Agent || session.DeviceId != tokenData.DeviceId {
+			sserr := am.sessionStore.DeleteByRefresh(oc.Ctx, userId, familyId)
+			if sserr != nil {
+				srterr := sserr.Error()
+				event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceAuthMiddleware,
+					&srterr, "", oc.TraceId)
+				am.audit.Log(oc.Ctx, event)
+			}
+			SendError(w, oc, &domain.ErrTokenReuseDetected, am.audit, domain.EventAutheticationFailed)
 			return
 		}
 
-		if deviceId != tokenData.DeviceId || agent != tokenData.Agent {
-			returnErrorSessionMiss(w, am.audit, traceId, ctx)
+		// Check session context: compare with request headers
+		if session.Agent != agent || session.DeviceId != deviceId {
+			sserr := am.sessionStore.DeleteByRefresh(oc.Ctx, userId, familyId)
+			if sserr != nil {
+				srterr := sserr.Error()
+				event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceAuthMiddleware,
+					&srterr, "", oc.TraceId)
+				am.audit.Log(oc.Ctx, event)
+			}
+			SendError(w, oc, &domain.ErrSessionContextMismatch, am.audit, domain.EventAutheticationFailed)
 			return
+		}
+
+		// Update IP if changed
+		if session.Ip != oc.Ip {
+			err := am.sessionStore.UpdateIpAdress(oc.Ctx, session.UserId, familyId, oc.Ip)
+			if err != nil {
+				srterr := err.Error()
+				event := domain.NewFailedEvent(domain.EventAutheticationFailed, domain.EventPlaceAuthMiddleware,
+					&srterr, oc.Hexid, oc.TraceId)
+				am.audit.Log(oc.Ctx, event)
+			}
 		}
 
 		oc.UserId = userId
 		oc.Hexid = hex.EncodeToString(userId[:])
 		oc.FamilyId = familyId
 
-		newCtx := context.WithValue(r.Context(), domain.OperCtxKey, &oc)
+		newCtx := context.WithValue(r.Context(), domain.OperCtxKey, oc)
 		next.ServeHTTP(w, r.WithContext(newCtx))
 	})
 }
@@ -235,7 +271,7 @@ func (am *AuthMiddleware) GetImpotantParams(next http.Handler) http.Handler {
 		agent := r.Header.Get(HeadUserAgent)
 
 		if ip == "" || deviceId == "" || agent == "" {
-			returnErrorBadRequest(w, am.audit, traceId, ctx)
+			SendError(w, &oc, &domain.ErrBadRequest, am.audit, domain.EventAutheticationFailed)
 			return
 		}
 
@@ -246,78 +282,6 @@ func (am *AuthMiddleware) GetImpotantParams(next http.Handler) http.Handler {
 		newCtx := context.WithValue(r.Context(), domain.OperCtxKey, &oc)
 		next.ServeHTTP(w, r.WithContext(newCtx))
 	})
-}
-
-func returnErrorSessionMiss(w http.ResponseWriter, audit domain.AuditService, traceId string, ctx context.Context) {
-	errBody := ErrBody{
-		Err:     "Unauthorized",
-		Code:    "SESSION_COMPROMISED",
-		Message: "Session context mismatch. Security violation.",
-	}
-	wwwErr := "Bearer error=\"invalid_token\", error_description=\"Session context mismatch. Security validation failed.\""
-	sendErrorPattern(w, audit, traceId, ctx, errBody, wwwErr, 0)
-}
-
-func returnErrorBadRequest(w http.ResponseWriter, audit domain.AuditService, traceId string, ctx context.Context) {
-	errBody := ErrBody{
-		Err:     "bad request",
-		Code:    "BAD_REQUEST",
-		Message: "The request is missing important fields.",
-	}
-	sendErrorPattern(w, audit, traceId, ctx, errBody, "", http.StatusBadRequest)
-}
-
-func returnErrorEmptyToken(w http.ResponseWriter, audit domain.AuditService, traceId string, ctx context.Context) {
-
-	errBody := ErrBody{
-		Err:     "Unauthorized",
-		Code:    "AUTH_HEADER_MISSING",
-		Message: "Authorization header is missing",
-	}
-
-	jsonBt, err := json.Marshal(errBody)
-	if err != nil {
-		strerr := err.Error()
-		event := domain.NewFailedEvent(domain.EventFailedParseErrAuthAnswer, domain.EventPlaceAuthMiddleware,
-			&strerr, "", traceId)
-		audit.Log(ctx, event)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set(HeadWWWAuthenticate, ValHeadBearer+" realm=\"user-service\"")
-	w.Header().Set(HeadContentType, ValHeadAppJson)
-	w.WriteHeader(http.StatusUnauthorized)
-	w.Write(jsonBt)
-
-}
-
-func sendErrorPattern(w http.ResponseWriter, audit domain.AuditService, traceId string, ctx context.Context,
-	errBody ErrBody, wwwErr string, code int) {
-
-	jsonBt, err := json.Marshal(errBody)
-	if err != nil {
-		strerr := err.Error()
-		event := domain.NewFailedEvent(domain.EventFailedParseErrAuthAnswer, domain.EventPlaceAuthMiddleware,
-			&strerr, "", traceId)
-		audit.Log(ctx, event)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	if code == 0 {
-		code = http.StatusUnauthorized
-	}
-
-	if wwwErr != "" {
-		w.Header().Set(HeadWWWAuthenticate, wwwErr)
-	}
-
-	w.Header().Set(HeadContentType, ValHeadAppJson)
-
-	w.WriteHeader(code)
-	w.Write(jsonBt)
-
 }
 
 // GetIp извлекает реальный IP клиента с учётом прокси-заголовков.
@@ -361,4 +325,17 @@ func GetIpWithFallback(r *http.Request) string {
 		return fallback
 	}
 	return ip
+}
+
+func getBearerData(header string) (string, bool) {
+
+	if len(header) < len(Bearer) {
+		return "", false
+	}
+
+	if strings.ToLower(header[:len(Bearer)]) == Bearer {
+		return strings.TrimSpace(header[len(Bearer):]), true
+	}
+
+	return "", false
 }

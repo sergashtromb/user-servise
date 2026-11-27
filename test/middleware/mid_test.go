@@ -848,6 +848,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 	handler = UMiddleware.Logger(handler)
 	handler = UMiddleware.TraceControl(handler)
 	handler = UMiddleware.PanicRecovery(handler)
+	handler = authMiddl.GetImpotantParams(handler)
 	handler = authMiddl.CheckInboxAccessToken(handler)
 
 	id1 := uuid.NewV7()
@@ -969,16 +970,16 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 
 				bodyJson := `
 				{
-					"error": "Unauthorized",
-					"message": "Authorization header is missing",
-					"code": "AUTH_HEADER_MISSING"					
+					"error": "invalid_token",
+					"message": "The token is invalid or malformed.",
+					"code": "INVALID_TOKEN"					
 				}
 				`
 				respNew := httptest.NewRecorder()
 				respNew.WriteHeader(http.StatusUnauthorized)
 
 				respNew.Write([]byte(bodyJson))
-				respNew.Header().Set("WWW-Authenticate", "Bearer realm=\"user-service\"")
+				respNew.Header().Set("WWW-Authenticate", `Bearer error="invalid_token", error_description="The token is invalid or malformed."`)
 				respNew.Header().Set("Content-Type", "application/json")
 
 				return &ResponseResult{
@@ -1014,9 +1015,9 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 
 				bodyJson := `
 				{
-					"error": "Unauthorized",
-					"message": "The access token expired",
-					"code": "TOKEN_EXPIRED"					
+					"error": "invalid_grant",
+					"message": "The access token has expired. Please re-authenticate.",
+					"code": "INVALID_GRANT"					
 				}
 				`
 
@@ -1024,7 +1025,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 				respNew.WriteHeader(http.StatusUnauthorized)
 				respNew.Write([]byte(bodyJson))
 				respNew.Header().Add("WWW-Authenticate",
-					"Bearer error=\"invalid_token\", error_description=\"The access token expired\"")
+					`Bearer error="invalid_token", error_description="The access token expired"`)
 				respNew.Header().Set("Content-Type", "application/json")
 				return &ResponseResult{
 					Code:    respNew.Code,
@@ -1058,9 +1059,9 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 
 				bodyJson := `
 				{
-					"error": "Unauthorized",
-					"message": "Access token invalid",
-					"code": "TOKEN_INVALID"					
+					"error": "invalid_token",
+					"message": "The token is invalid or malformed.",
+					"code": "INVALID_TOKEN"					
 				}
 				`
 				resp := httptest.NewRecorder()
@@ -1068,7 +1069,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 				resp.Write([]byte(bodyJson))
 
 				resp.Header().Add("WWW-Authenticate",
-					"Bearer error=\"invalid_token\", error_description=\"The access token invalid\"")
+					`Bearer error="invalid_token", error_description="The token is invalid or malformed."`)
 				resp.Header().Set("Content-Type", "application/json")
 				return &ResponseResult{
 					Code:    resp.Code,
@@ -1100,14 +1101,17 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 				sessionStoreMock.On("GetSessionByFamilyId", context.Background(), id1, familyId1).
 					Return(&trueSession, nil).
 					Once()
+				sessionStoreMock.On("UpdateIpAdress", context.Background(), id1, familyId1, "3.3.3.3").
+					Return(nil).
+					Once()
 			},
 			fnGetRespResult: func() *ResponseResult {
 
 				bodyJson := `
 				{
-					"error": "Unauthorized",
-					"message": "Session context mismatch. Security violation.",
-					"code": "SESSION_COMPROMISED"					
+					"error": "invalid_grant",
+					"message": "Session context mismatch. Please log in again.",
+					"code": "SESSION_CONTEXT_MISMATCH"					
 				}
 				`
 
@@ -1115,7 +1119,7 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 				resp.WriteHeader(http.StatusUnauthorized)
 				resp.Write([]byte(bodyJson))
 				resp.Header().Add("WWW-Authenticate",
-					"Bearer error=\"invalid_token\", error_description=\"Session context mismatch. Security validation failed.\"")
+					`Bearer error="invalid_grant", error_description="Session context mismatch. Please log in again."`)
 				resp.Header().Set("Content-Type", "application/json")
 				return &ResponseResult{
 					Code:    resp.Code,
@@ -1428,7 +1432,11 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Header.Set("Authorization", "Bearer "+tokenstr)
-			req.Header.Set("User-Agent", val.Agent)
+			if val.AgentReq != "" {
+				req.Header.Set("User-Agent", val.AgentReq)
+			} else {
+				req.Header.Set("User-Agent", val.Agent)
+			}
 
 			req.RemoteAddr = val.IpReq
 
@@ -1441,8 +1449,12 @@ func TestAuthMiddlewareCheckUp(t *testing.T) {
 
 			cookie := &http.Cookie{
 				Name:     "DeviceId",
-				Value:    val.DeviceId,
+				Value:    val.DeviceIdReq,
 				HttpOnly: true,
+			}
+
+			if cookie.Value == "" {
+				cookie.Value = val.DeviceId
 			}
 
 			req.AddCookie(cookie)

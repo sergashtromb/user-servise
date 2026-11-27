@@ -88,9 +88,10 @@ type OperationTokens struct {
 
 type OperationUserData struct {
 	StatusCode int
-	Username   string `json:"username"`
-	Email      string `json:"email"`
-	Phone      string `json:"phone"`
+	Username   string    `json:"username"`
+	Email      string    `json:"email"`
+	Phone      string    `json:"phone"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type OperationError struct {

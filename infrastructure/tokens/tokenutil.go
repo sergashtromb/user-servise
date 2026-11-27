@@ -142,6 +142,31 @@ func (tu *TokenUtil) GeneratePairToken(userId, familyId uuid.UUID, deviceId, age
 	return signedAccess, signedRefresh, nil
 }
 
+// GenerateExpiredAccessToken — генерирует access токен с exp в прошлом.
+func (tu *TokenUtil) GenerateExpiredAccessToken(userId, familyId uuid.UUID, deviceId, agent string) (string, error) {
+
+	accessSecret := tu.cm.Get().TokenConf.AccessBt
+
+	accessClaims := &AccessToken{
+		UserId:    userId,
+		FamilyId:  familyId,
+		DeviceId:  deviceId,
+		Agent:     agent,
+		TokenType: AccessTokenType,
+		Version:   FirstVersion,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)),
+			Issuer:    Issuer,
+			IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
+			Subject:   userId.String(),
+			ID:        uuid.New().String(),
+		},
+	}
+
+	access := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	return access.SignedString(accessSecret)
+}
+
 func (tu *TokenUtil) ValidAccessToken(token string) (*AccessToken, error) {
 
 	errFE := ErrFieldEmpty.Clone()

@@ -10,6 +10,9 @@ import (
 	"uuid"
 )
 
+// ErrBody — алиас для domain.OperationError для обратной совместимости.
+type ErrBody = domain.OperationError
+
 type ShellResponseWrite struct {
 	http.ResponseWriter
 	status   int
